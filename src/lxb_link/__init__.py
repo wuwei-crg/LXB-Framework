@@ -20,7 +20,7 @@ Example:
     ...     data = client.screenshot()
 
 Version: 1.0.0
-Author: LXB-Link Development Team
+Author: WuWei
 License: MIT
 """
 
@@ -54,7 +54,7 @@ from .transport import Transport
 
 
 __version__ = '1.0.0'
-__author__ = 'LXB-Link Development Team'
+__author__ = 'WuWei'
 __all__ = [
     # Main client class
     'LXBLinkClient',

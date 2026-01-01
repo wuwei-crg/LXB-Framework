@@ -434,7 +434,7 @@ MIT License
 
 ## 👨‍💻 作者
 
-LXB-Link Development Team
+WuWei
 
 ---
 
