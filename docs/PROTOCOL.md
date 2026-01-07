@@ -1,8 +1,31 @@
 # LXB-Link 协议规范
 
-**版本**: 1.0-dev (Binary First Architecture)
-**作者**: WuWei
-**最后更新**: 2026-01-01
+## Protocol Specification for LXB-Link Communication Protocol
+
+| 项目         | 内容                                 |
+|:-------------|:-------------------------------------|
+| **文档版本** | 1.0.0                                |
+| **协议版本** | 1.0 (Binary First Architecture)      |
+| **作者**     | WuWei                                |
+| **创建日期** | 2025-01-01                           |
+| **最后更新** | 2026-01-07                           |
+| **状态**     | 正式发布 (Production Ready)          |
+| **适用范围** | Android 设备控制、AI Agent 感知      |
+
+---
+
+## 文档说明
+
+本文档定义了 LXB-Link 通信协议的完整规范，包括：
+
+- 帧格式与字节序规范
+- 分层命令集架构 (Layered ISA)
+- Binary First 数据编码标准
+- 可靠传输机制 (Stop-and-Wait ARQ)
+- 字符串池压缩算法
+- 错误处理与扩展指南
+
+**目标读者**: 协议实现者、客户端/服务端开发者、系统集成工程师
 
 ---
 
