@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LXB Web Console</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- 顶部标题栏 -->
+        <header class="header">
+            <h1>🎮 LXB Web Console</h1>
+            <p>可视化调试控制台 - LXB-Link 协议</p>
+        </header>
+
+        <!-- 连接控制区 -->
+        <section class="connection-panel">
+            <div class="connection-inputs">
+                <label>设备地址:</label>
+                <input type="text" id="host" value="127.0.0.1" placeholder="IP 地址">
+
+                <label>端口:</label>
+                <input type="number" id="port" value="12345" placeholder="端口">
+
+                <button id="btn-connect" class="btn btn-primary">🔌 连接</button>
+                <button id="btn-disconnect" class="btn btn-secondary" disabled>🔌 断开</button>
+            </div>
+            <div id="connection-status" class="status-disconnected">
+                ⚫ 未连接
+            </div>
+        </section>
+
+        <!-- 主内容区 -->
+        <div class="main-content">
+            <!-- 左侧：指令控制面板 -->
+            <aside class="command-panel">
+                <h2>📡 指令面板</h2>
+
+                <!-- Link Layer -->
+                <div class="command-group">
+                    <h3>Link Layer</h3>
+                    <button class="btn btn-cmd" data-cmd="handshake">🤝 HANDSHAKE</button>
+                    <button class="btn btn-cmd" data-cmd="heartbeat">💓 HEARTBEAT</button>
+                </div>
+
+                <!-- Input Layer -->
+                <div class="command-group">
+                    <h3>Input Layer</h3>
+                    <div class="input-row">
+                        <input type="number" id="tap-x" value="500" placeholder="X" class="input-small">
+                        <input type="number" id="tap-y" value="800" placeholder="Y" class="input-small">
+                        <button class="btn btn-cmd" data-cmd="tap">👆 TAP</button>
+                    </div>
+
+                    <div class="input-row">
+                        <input type="number" id="swipe-x1" value="500" placeholder="X1" class="input-tiny">
+                        <input type="number" id="swipe-y1" value="1000" placeholder="Y1" class="input-tiny">
+                        <span>→</span>
+                        <input type="number" id="swipe-x2" value="500" placeholder="X2" class="input-tiny">
+                        <input type="number" id="swipe-y2" value="500" placeholder="Y2" class="input-tiny">
+                        <input type="number" id="swipe-duration" value="300" placeholder="ms" class="input-tiny">
+                        <button class="btn btn-cmd" data-cmd="swipe">👆 SWIPE</button>
+                    </div>
+
+                    <div class="input-row">
+                        <input type="number" id="longpress-x" value="500" placeholder="X" class="input-small">
+                        <input type="number" id="longpress-y" value="800" placeholder="Y" class="input-small">
+                        <input type="number" id="longpress-duration" value="1000" placeholder="ms" class="input-small">
+                        <button class="btn btn-cmd" data-cmd="long_press">⏱️ LONG_PRESS</button>
+                    </div>
+                </div>
+
+                <!-- Input Extension -->
+                <div class="command-group">
+                    <h3>Input Extension</h3>
+                    <div class="input-row">
+                        <input type="text" id="input-text" value="Hello LXB" placeholder="输入文本" class="input-medium">
+                        <button class="btn btn-cmd" data-cmd="input_text">⌨️ INPUT_TEXT</button>
+                    </div>
+                </div>
+
+                <!-- Sense Layer -->
+                <div class="command-group">
+                    <h3>Sense Layer</h3>
+                    <button class="btn btn-cmd" data-cmd="get_activity">📱 GET_ACTIVITY</button>
+                </div>
+            </aside>
+
+            <!-- 右侧：日志显示区 -->
+            <section class="log-panel">
+                <div class="log-header">
+                    <h2>📋 日志</h2>
+                    <button id="btn-clear-log" class="btn btn-small">🗑️ 清空</button>
+                </div>
+                <div id="log-container" class="log-container">
+                    <div class="log-entry log-info">
+                        <span class="log-time">00:00:00</span>
+                        <span class="log-message">控制台已启动，请连接设备...</span>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- 底部状态栏 -->
+        <footer class="footer">
+            <div class="stats">
+                <span>📊 已发送: <strong id="stat-sent">0</strong></span>
+                <span>✅ 成功: <strong id="stat-success">0</strong></span>
+                <span>❌ 失败: <strong id="stat-failed">0</strong></span>
+            </div>
+            <div class="footer-info">
+                LXB-Link Protocol v1.0 | Binary First Architecture
+            </div>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

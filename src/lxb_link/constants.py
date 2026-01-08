@@ -132,7 +132,12 @@ CMD_IMG_FIN = 0x65         # Transfer complete (migrated from 0x14)
 CMD_START_RECORD = 0x66    # Start screen recording (new)
 CMD_STOP_RECORD = 0x67     # Stop screen recording (new)
 CMD_AUDIO_CAPTURE = 0x68   # Audio capture (new)
-# 0x69-0x6F: Reserved for streaming
+# UI Hierarchy Transfer (0x69-0x6C) - Large UI tree fragmented transfer
+CMD_HIERARCHY_REQ = 0x69   # Request UI tree with parameters (format, compress, max_depth)
+CMD_HIERARCHY_META = 0x6A  # UI tree metadata (tree_id, total_size, num_chunks)
+CMD_HIERARCHY_CHUNK = 0x6B # UI tree chunk (chunk_index + data)
+CMD_HIERARCHY_FIN = 0x6C   # UI tree transfer complete (reuses CMD_IMG_MISSING for missing chunks)
+# 0x6D-0x6F: Reserved for streaming
 
 # =============================================================================
 # Legacy Command Aliases (for backward compatibility during migration)
@@ -193,6 +198,10 @@ CHANNEL_MAP = {
     CMD_IMG_META: CH_DATA,
     CMD_IMG_CHUNK: CH_DATA,
     CMD_SCREENSHOT: CH_DATA,
+    CMD_HIERARCHY_REQ: CH_DATA,
+    CMD_HIERARCHY_META: CH_DATA,
+    CMD_HIERARCHY_CHUNK: CH_DATA,
+    CMD_HIERARCHY_FIN: CH_DATA,
 
     # Debug Channel (can be dropped)
     CMD_LOGCAT: CH_DEBUG,

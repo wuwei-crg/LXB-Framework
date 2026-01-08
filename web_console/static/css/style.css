@@ -1,0 +1,359 @@
+/* LXB Web Console - Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+}
+
+/* 头部 */
+.header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 30px;
+    text-align: center;
+}
+
+.header h1 {
+    font-size: 2.5em;
+    margin-bottom: 10px;
+}
+
+.header p {
+    opacity: 0.9;
+    font-size: 1.1em;
+}
+
+/* 连接面板 */
+.connection-panel {
+    padding: 20px 30px;
+    background: #f8f9fa;
+    border-bottom: 2px solid #e9ecef;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.connection-inputs {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.connection-inputs label {
+    font-weight: 600;
+    color: #495057;
+}
+
+.connection-inputs input {
+    padding: 8px 12px;
+    border: 2px solid #dee2e6;
+    border-radius: 6px;
+    font-size: 14px;
+    transition: border-color 0.3s;
+}
+
+.connection-inputs input:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+.connection-inputs input[type="text"] {
+    width: 150px;
+}
+
+.connection-inputs input[type="number"] {
+    width: 100px;
+}
+
+#connection-status {
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.status-disconnected {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.status-connected {
+    background: #d4edda;
+    color: #155724;
+}
+
+/* 主内容区 */
+.main-content {
+    display: grid;
+    grid-template-columns: 400px 1fr;
+    min-height: 600px;
+}
+
+/* 指令面板 */
+.command-panel {
+    padding: 25px;
+    background: #f8f9fa;
+    border-right: 2px solid #e9ecef;
+    overflow-y: auto;
+}
+
+.command-panel h2 {
+    color: #495057;
+    margin-bottom: 20px;
+    font-size: 1.5em;
+}
+
+.command-group {
+    margin-bottom: 25px;
+    padding: 15px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.command-group h3 {
+    color: #6c757d;
+    font-size: 0.9em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #e9ecef;
+}
+
+.input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.input-small {
+    width: 80px !important;
+    padding: 6px 8px !important;
+    font-size: 13px !important;
+}
+
+.input-tiny {
+    width: 60px !important;
+    padding: 6px 8px !important;
+    font-size: 13px !important;
+}
+
+.input-medium {
+    flex: 1;
+    min-width: 150px;
+    padding: 6px 8px;
+    font-size: 13px;
+    border: 2px solid #dee2e6;
+    border-radius: 4px;
+}
+
+/* 按钮样式 */
+.btn {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background: #667eea;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #5568d3;
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #5a6268;
+}
+
+.btn-cmd {
+    background: #28a745;
+    color: white;
+    width: 100%;
+    margin-bottom: 8px;
+}
+
+.btn-cmd:hover {
+    background: #218838;
+}
+
+.btn-small {
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+/* 日志面板 */
+.log-panel {
+    display: flex;
+    flex-direction: column;
+    background: #1e1e1e;
+}
+
+.log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background: #2d2d2d;
+    border-bottom: 2px solid #3e3e3e;
+}
+
+.log-header h2 {
+    color: #ffffff;
+    font-size: 1.2em;
+}
+
+.log-container {
+    flex: 1;
+    padding: 15px;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.log-entry {
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    border-radius: 4px;
+    display: flex;
+    gap: 12px;
+}
+
+.log-time {
+    color: #6c757d;
+    font-weight: 600;
+    min-width: 80px;
+}
+
+.log-message {
+    flex: 1;
+}
+
+.log-info {
+    background: #212529;
+    color: #adb5bd;
+}
+
+.log-success {
+    background: #1a3d2e;
+    color: #69f0ae;
+}
+
+.log-error {
+    background: #3d1a1a;
+    color: #ff5252;
+}
+
+.log-command {
+    background: #1a2a3d;
+    color: #64b5f6;
+}
+
+.log-response {
+    background: #2d1a3d;
+    color: #ce93d8;
+}
+
+/* 底部栏 */
+.footer {
+    padding: 15px 30px;
+    background: #f8f9fa;
+    border-top: 2px solid #e9ecef;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.stats {
+    display: flex;
+    gap: 20px;
+    font-size: 14px;
+    color: #6c757d;
+}
+
+.stats strong {
+    color: #495057;
+    font-size: 16px;
+}
+
+.footer-info {
+    color: #adb5bd;
+    font-size: 12px;
+}
+
+/* 响应式设计 */
+@media (max-width: 1024px) {
+    .main-content {
+        grid-template-columns: 1fr;
+    }
+
+    .command-panel {
+        border-right: none;
+        border-bottom: 2px solid #e9ecef;
+    }
+}
+
+/* 滚动条美化 */
+.log-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+.log-container::-webkit-scrollbar-track {
+    background: #1e1e1e;
+}
+
+.log-container::-webkit-scrollbar-thumb {
+    background: #4a4a4a;
+    border-radius: 4px;
+}
+
+.log-container::-webkit-scrollbar-thumb:hover {
+    background: #5a5a5a;
+}

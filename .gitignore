@@ -171,3 +171,30 @@ examples/screenshot*.png
 # Local configuration
 local_config.py
 config.local.py
+
+# =============================================================================
+# Android Project (LXB-Ignition)
+# =============================================================================
+
+# Gradle
+.gradle
+/android/LXB-Ignition/build
+/android/LXB-Ignition/*/build
+/android/LXB-Ignition/local.properties
+*.iml
+
+# Android Studio / IntelliJ IDEA
+/android/LXB-Ignition/.idea/caches
+/android/LXB-Ignition/.idea/libraries
+/android/LXB-Ignition/.idea/modules.xml
+/android/LXB-Ignition/.idea/workspace.xml
+/android/LXB-Ignition/.idea/navEditor.xml
+/android/LXB-Ignition/.idea/assetWizardSettings.xml
+/android/LXB-Ignition/.idea/shelf
+/android/LXB-Ignition/captures
+/android/LXB-Ignition/.externalNativeBuild
+/android/LXB-Ignition/.cxx
+
+# LXB Server 构建产物
+/android/LXB-Ignition/lxb-core.jar
+/android/LXB-Ignition/lxb-server.zip

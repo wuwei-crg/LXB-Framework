@@ -215,9 +215,9 @@ class LXBLinkClient:
 
         logger.info(f"Sending TAP command: ({x}, {y})")
 
-        # Pack TAP payload: x[uint16], y[uint16]
+        # Pack TAP payload: x[uint16], y[uint16] - Big Endian (Network Byte Order)
         import struct
-        payload = struct.pack('<HH', x, y)
+        payload = struct.pack('>HH', x, y)
 
         response = self._transport.send_reliable(CMD_TAP, payload) # pyright: ignore[reportOptionalMemberAccess]
 
@@ -263,9 +263,9 @@ class LXBLinkClient:
         logger.info(f"Sending SWIPE command: ({x1}, {y1}) -> ({x2}, {y2}), "
                     f"duration={duration}ms")
 
-        # Pack SWIPE payload: x1, y1, x2, y2, duration (all uint16)
+        # Pack SWIPE payload: x1, y1, x2, y2, duration (all uint16) - Big Endian (Network Byte Order)
         import struct
-        payload = struct.pack('<HHHHH', x1, y1, x2, y2, duration)
+        payload = struct.pack('>HHHHH', x1, y1, x2, y2, duration)
 
         response = self._transport.send_reliable(CMD_SWIPE, payload)
 
