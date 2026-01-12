@@ -465,15 +465,17 @@ public class PerceptionEngine {
         System.out.println(TAG + " DUMP_HIERARCHY format=" + format +
                 " compress=" + compress + " maxDepth=" + maxDepth);
 
-        if (uiAutomation == null) {
-            System.err.println(TAG + " UiAutomation not available");
-            return new byte[0];
+        Object rootNode = null;
+
+        // 尝试通过 UiAutomation 获取根节点
+        if (uiAutomation != null) {
+            rootNode = uiAutomation.getRootNode();
         }
 
-        Object rootNode = uiAutomation.getRootNode();
+        // 如果 UiAutomation 失败，使用 shell 后备方案
         if (rootNode == null) {
-            System.err.println(TAG + " Failed to get root node");
-            return new byte[0];
+            System.out.println(TAG + " UiAutomation not available, trying shell fallback...");
+            return handleDumpHierarchyViaShell(compress);
         }
 
         try {
@@ -560,12 +562,236 @@ public class PerceptionEngine {
     }
 
     /**
+     * 通过 shell 命令获取 UI 树 (后备方案)
+     * 使用 uiautomator dump 命令
+     */
+    private byte[] handleDumpHierarchyViaShell(int compress) {
+        String tmpFile = "/data/local/tmp/lxb_ui_dump.xml";
+
+        try {
+            // 执行 uiautomator dump 命令
+            System.out.println(TAG + " Executing uiautomator dump...");
+            Process process = Runtime.getRuntime().exec(new String[]{
+                    "uiautomator", "dump", tmpFile
+            });
+            int exitCode = process.waitFor();
+
+            if (exitCode != 0) {
+                System.err.println(TAG + " uiautomator dump failed with exit code: " + exitCode);
+                return new byte[0];
+            }
+
+            // 读取 XML 文件
+            java.io.FileInputStream fis = new java.io.FileInputStream(tmpFile);
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int len;
+            while ((len = fis.read(buffer)) != -1) {
+                baos.write(buffer, 0, len);
+            }
+            fis.close();
+
+            // 删除临时文件
+            Runtime.getRuntime().exec("rm -f " + tmpFile);
+
+            String xmlContent = baos.toString("UTF-8");
+            System.out.println(TAG + " Got XML dump: " + xmlContent.length() + " bytes");
+
+            // 解析 XML 并转换为二进制格式
+            List<NodeInfo> nodes = new ArrayList<>();
+            DynamicStringPool pool = new DynamicStringPool();
+            parseXmlDump(xmlContent, nodes, pool);
+
+            System.out.println(TAG + " Parsed " + nodes.size() + " nodes from XML");
+
+            // 序列化节点 (15 bytes each)
+            ByteArrayOutputStream nodeData = new ByteArrayOutputStream();
+            for (NodeInfo node : nodes) {
+                ByteBuffer nodeBuf = ByteBuffer.allocate(15);
+                nodeBuf.order(ByteOrder.BIG_ENDIAN);
+
+                nodeBuf.put((byte) (node.parentIndex == -1 ? 0xFF : node.parentIndex));
+                nodeBuf.put((byte) node.childCount);
+                nodeBuf.put((byte) node.flags);
+                nodeBuf.putShort((short) node.left);
+                nodeBuf.putShort((short) node.top);
+                nodeBuf.putShort((short) node.right);
+                nodeBuf.putShort((short) node.bottom);
+                nodeBuf.put((byte) node.classId);
+                nodeBuf.put((byte) node.textId);
+                nodeBuf.put((byte) node.resId);
+                nodeBuf.put((byte) node.descId);
+
+                nodeData.write(nodeBuf.array());
+            }
+
+            // 序列化动态字符串池
+            byte[] poolData = pool.serialize();
+
+            // 合并数据
+            byte[] uncompressedData = new byte[poolData.length + nodeData.size()];
+            System.arraycopy(poolData, 0, uncompressedData, 0, poolData.length);
+            System.arraycopy(nodeData.toByteArray(), 0, uncompressedData, poolData.length, nodeData.size());
+
+            int originalSize = uncompressedData.length;
+            byte[] outputData;
+            int compressFlag;
+
+            // 压缩 (如果请求)
+            if (compress == 1) {  // zlib
+                Deflater deflater = new Deflater(6);
+                deflater.setInput(uncompressedData);
+                deflater.finish();
+
+                ByteArrayOutputStream compressedStream = new ByteArrayOutputStream();
+                byte[] tempBuf = new byte[1024];
+                while (!deflater.finished()) {
+                    int defLen = deflater.deflate(tempBuf);
+                    compressedStream.write(tempBuf, 0, defLen);
+                }
+                deflater.end();
+
+                outputData = compressedStream.toByteArray();
+                compressFlag = 1;
+            } else {
+                outputData = uncompressedData;
+                compressFlag = 0;
+            }
+
+            // 构建响应头
+            ByteBuffer respBuffer = ByteBuffer.allocate(14 + outputData.length);
+            respBuffer.order(ByteOrder.BIG_ENDIAN);
+
+            respBuffer.put((byte) 0x01);  // version
+            respBuffer.put((byte) compressFlag);
+            respBuffer.putInt(originalSize);
+            respBuffer.putInt(outputData.length);
+            respBuffer.putShort((short) nodes.size());
+            respBuffer.putShort((short) pool.getDynamicCount());
+            respBuffer.put(outputData);
+
+            return respBuffer.array();
+
+        } catch (Exception e) {
+            System.err.println(TAG + " Shell fallback failed: " + e.getMessage());
+            e.printStackTrace();
+            return new byte[0];
+        }
+    }
+
+    /**
+     * 解析 uiautomator dump 的 XML 输出
+     */
+    private void parseXmlDump(String xmlContent, List<NodeInfo> nodes, DynamicStringPool pool) {
+        // 简单的 XML 解析 - 查找 <node> 元素
+        // 格式: <node index="0" text="" resource-id="" class="..." bounds="[0,0][1080,1920]" ...>
+
+        java.util.Stack<Integer> parentStack = new java.util.Stack<>();
+        parentStack.push(-1);
+
+        Pattern nodePattern = Pattern.compile("<node\\s+([^>]+?)(?:/>|>)");
+        Pattern attrPattern = Pattern.compile("(\\w+(?:-\\w+)?)=\"([^\"]*)\"");
+
+        java.util.regex.Matcher nodeMatcher = nodePattern.matcher(xmlContent);
+
+        while (nodeMatcher.find()) {
+            String attrs = nodeMatcher.group(1);
+
+            NodeInfo info = new NodeInfo();
+            info.parentIndex = parentStack.peek();
+
+            // 解析属性
+            java.util.regex.Matcher attrMatcher = attrPattern.matcher(attrs);
+            while (attrMatcher.find()) {
+                String name = attrMatcher.group(1);
+                String value = attrMatcher.group(2);
+
+                switch (name) {
+                    case "class":
+                        info.classId = pool.add(value);
+                        break;
+                    case "text":
+                        info.textId = pool.add(value);
+                        break;
+                    case "resource-id":
+                        info.resId = pool.add(value);
+                        break;
+                    case "content-desc":
+                        info.descId = pool.add(value);
+                        break;
+                    case "bounds":
+                        // 解析 "[0,0][1080,1920]" 格式
+                        Pattern boundsPattern = Pattern.compile("\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]");
+                        java.util.regex.Matcher boundsMatcher = boundsPattern.matcher(value);
+                        if (boundsMatcher.find()) {
+                            info.left = Integer.parseInt(boundsMatcher.group(1));
+                            info.top = Integer.parseInt(boundsMatcher.group(2));
+                            info.right = Integer.parseInt(boundsMatcher.group(3));
+                            info.bottom = Integer.parseInt(boundsMatcher.group(4));
+                        }
+                        break;
+                    case "clickable":
+                        if ("true".equals(value)) info.flags |= 0x01;
+                        break;
+                    case "enabled":
+                        if ("true".equals(value)) info.flags |= 0x04;
+                        break;
+                    case "focused":
+                        if ("true".equals(value)) info.flags |= 0x08;
+                        break;
+                    case "scrollable":
+                        if ("true".equals(value)) info.flags |= 0x10;
+                        break;
+                    case "checkable":
+                        if ("true".equals(value)) info.flags |= 0x40;
+                        break;
+                    case "checked":
+                        if ("true".equals(value)) info.flags |= 0x80;
+                        break;
+                }
+            }
+
+            // 默认设置 visible 标志
+            info.flags |= 0x02;
+
+            int currentIndex = nodes.size();
+            nodes.add(info);
+
+            // 检查是否是自闭合标签
+            String fullMatch = nodeMatcher.group(0);
+            if (!fullMatch.endsWith("/>")) {
+                // 更新父节点的 childCount
+                if (info.parentIndex >= 0 && info.parentIndex < nodes.size()) {
+                    nodes.get(info.parentIndex).childCount++;
+                }
+                parentStack.push(currentIndex);
+            } else {
+                // 自闭合标签，更新父节点的 childCount
+                if (info.parentIndex >= 0 && info.parentIndex < nodes.size()) {
+                    nodes.get(info.parentIndex).childCount++;
+                }
+            }
+        }
+
+        // 处理 </node> 闭合标签
+        Pattern closePattern = Pattern.compile("</node>");
+        java.util.regex.Matcher closeMatcher = closePattern.matcher(xmlContent);
+        while (closeMatcher.find() && parentStack.size() > 1) {
+            parentStack.pop();
+        }
+    }
+
+    /**
      * 递归收集节点
      */
     private void collectNodes(Object node, int parentIndex, int depth, int maxDepth,
                               List<NodeInfo> nodes, DynamicStringPool pool) throws Exception {
         if (node == null) return;
         if (maxDepth > 0 && depth >= maxDepth) return;
+
+        // 检查节点是否可见 (只收集可见节点)
+        boolean isVisible = (Boolean) isVisibleToUserMethod.invoke(node);
+        if (!isVisible) return;
 
         int currentIndex = nodes.size();
         NodeInfo info = new NodeInfo();
@@ -592,7 +818,7 @@ public class PerceptionEngine {
         // 获取标志
         info.flags = 0;
         if ((Boolean) isClickableMethod.invoke(node)) info.flags |= 0x01;
-        if ((Boolean) isVisibleToUserMethod.invoke(node)) info.flags |= 0x02;
+        info.flags |= 0x02;  // visible (已确认可见)
         if ((Boolean) isEnabledMethod.invoke(node)) info.flags |= 0x04;
         if ((Boolean) isFocusedMethod.invoke(node)) info.flags |= 0x08;
         if ((Boolean) isScrollableMethod.invoke(node)) info.flags |= 0x10;
@@ -600,19 +826,25 @@ public class PerceptionEngine {
         if ((Boolean) isCheckableMethod.invoke(node)) info.flags |= 0x40;
         if ((Boolean) isCheckedMethod.invoke(node)) info.flags |= 0x80;
 
-        // 获取子节点数量
+        // 获取子节点数量并递归
         int childCount = (Integer) getChildCountMethod.invoke(node);
-        info.childCount = Math.min(childCount, 255);
 
+        // 先添加节点
         nodes.add(info);
 
-        // 递归处理子节点
+        // 递归处理子节点，统计实际添加的可见子节点数量
+        int visibleChildCount = 0;
         for (int i = 0; i < childCount; i++) {
             Object child = getChildMethod.invoke(node, i);
             if (child != null) {
+                int beforeSize = nodes.size();
                 collectNodes(child, currentIndex, depth + 1, maxDepth, nodes, pool);
+                if (nodes.size() > beforeSize) {
+                    visibleChildCount++;
+                }
             }
         }
+        info.childCount = Math.min(visibleChildCount, 255);
     }
 
     /**
@@ -714,6 +946,543 @@ public class PerceptionEngine {
         // 分片传输 - 暂不实现，先使用 DUMP_HIERARCHY 单帧传输
         System.out.println(TAG + " HIERARCHY_REQ (delegating to DUMP_HIERARCHY)");
         return handleDumpHierarchy(payload);
+    }
+
+    /**
+     * 处理 DUMP_ACTIONS 命令 (0x33)
+     *
+     * 只返回可交互节点 (clickable/editable/scrollable) 和有文本的节点
+     * 自动关联子节点文本到父节点
+     *
+     * 响应格式: version[1B] + count[2B] + nodes[...] + string_pool[...]
+     *
+     * ActionNode 格式 (20 bytes):
+     *   type[1B]     - 0x01=clickable, 0x02=editable, 0x04=scrollable, 0x08=text_only
+     *   bounds[8B]   - left[2B] + top[2B] + right[2B] + bottom[2B]
+     *   class_id[1B] - 类名字符串ID
+     *   text_id[2B]  - 文本字符串ID (2B 支持更长文本)
+     *   res_id[1B]   - Resource ID 字符串ID
+     *   desc_id[1B]  - Content Description 字符串ID
+     *   reserved[6B] - 保留
+     *
+     * @param payload 请求负载 (暂无参数)
+     * @return 响应数据
+     */
+    public byte[] handleDumpActions(byte[] payload) {
+        System.out.println(TAG + " DUMP_ACTIONS");
+
+        if (uiAutomation == null) {
+            System.err.println(TAG + " UiAutomation not available, trying shell fallback");
+            return handleDumpActionsViaShell();
+        }
+
+        try {
+            // 获取根节点
+            Object rootNode = uiAutomation.getRootNode();
+            if (rootNode == null) {
+                System.err.println(TAG + " getRootNode returned null, trying shell fallback");
+                return handleDumpActionsViaShell();
+            }
+
+            // 收集可交互节点
+            List<ActionNode> actions = new ArrayList<>();
+            ActionStringPool pool = new ActionStringPool();
+            collectActions(rootNode, actions, pool);
+
+            System.out.println(TAG + " Collected " + actions.size() + " action nodes");
+
+            // 序列化
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+            // 版本号
+            out.write(0x01);
+
+            // 节点数量 (2 bytes, big endian)
+            out.write((actions.size() >> 8) & 0xFF);
+            out.write(actions.size() & 0xFF);
+
+            // 序列化每个节点 (20 bytes each)
+            for (ActionNode node : actions) {
+                ByteBuffer buf = ByteBuffer.allocate(20);
+                buf.order(ByteOrder.BIG_ENDIAN);
+
+                buf.put(node.type);
+                buf.putShort((short) node.left);
+                buf.putShort((short) node.top);
+                buf.putShort((short) node.right);
+                buf.putShort((short) node.bottom);
+                buf.put((byte) node.classId);
+                buf.putShort((short) node.textId);  // 2 bytes for text ID
+                buf.put((byte) node.resId);
+                buf.put((byte) node.descId);
+                buf.put(new byte[6]);  // reserved
+
+                out.write(buf.array());
+            }
+
+            // 序列化字符串池
+            byte[] poolData = pool.serialize();
+            out.write(poolData);
+
+            byte[] result = out.toByteArray();
+            System.out.println(TAG + " DUMP_ACTIONS response: " + result.length + " bytes");
+
+            return result;
+
+        } catch (Exception e) {
+            System.err.println(TAG + " DUMP_ACTIONS failed: " + e.getMessage());
+            e.printStackTrace();
+            return new byte[]{0x00};  // 失败
+        }
+    }
+
+    /**
+     * 通过 shell 命令获取可交互节点 (后备方案)
+     * 解析 XML 并过滤出可交互节点
+     */
+    private byte[] handleDumpActionsViaShell() {
+        String tmpFile = "/data/local/tmp/lxb_ui_dump.xml";
+
+        try {
+            // 执行 uiautomator dump 命令
+            System.out.println(TAG + " DUMP_ACTIONS via shell...");
+            Process process = Runtime.getRuntime().exec(new String[]{
+                    "uiautomator", "dump", tmpFile
+            });
+            int exitCode = process.waitFor();
+
+            if (exitCode != 0) {
+                System.err.println(TAG + " uiautomator dump failed with exit code: " + exitCode);
+                return new byte[]{0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
+            }
+
+            // 读取 XML 文件
+            java.io.FileInputStream fis = new java.io.FileInputStream(tmpFile);
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int len;
+            while ((len = fis.read(buffer)) != -1) {
+                baos.write(buffer, 0, len);
+            }
+            fis.close();
+
+            // 删除临时文件
+            Runtime.getRuntime().exec("rm -f " + tmpFile);
+
+            String xmlContent = baos.toString("UTF-8");
+            System.out.println(TAG + " Got XML dump: " + xmlContent.length() + " bytes");
+
+            // 解析 XML 并过滤可交互节点
+            List<ActionNode> actions = new ArrayList<>();
+            ActionStringPool pool = new ActionStringPool();
+            parseXmlDumpForActions(xmlContent, actions, pool);
+
+            System.out.println(TAG + " Filtered " + actions.size() + " action nodes from XML");
+
+            // 序列化
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+            // 版本号
+            out.write(0x01);
+
+            // 节点数量 (2 bytes, big endian)
+            out.write((actions.size() >> 8) & 0xFF);
+            out.write(actions.size() & 0xFF);
+
+            // 序列化每个节点 (20 bytes each)
+            for (ActionNode node : actions) {
+                ByteBuffer buf = ByteBuffer.allocate(20);
+                buf.order(ByteOrder.BIG_ENDIAN);
+
+                buf.put(node.type);
+                buf.putShort((short) node.left);
+                buf.putShort((short) node.top);
+                buf.putShort((short) node.right);
+                buf.putShort((short) node.bottom);
+                buf.put((byte) node.classId);
+                buf.putShort((short) node.textId);
+                buf.put((byte) node.resId);
+                buf.put((byte) node.descId);
+                buf.put(new byte[6]);  // reserved
+
+                out.write(buf.array());
+            }
+
+            // 序列化字符串池
+            byte[] poolData = pool.serialize();
+            out.write(poolData);
+
+            byte[] result = out.toByteArray();
+            System.out.println(TAG + " DUMP_ACTIONS shell response: " + result.length + " bytes");
+
+            return result;
+
+        } catch (Exception e) {
+            System.err.println(TAG + " DUMP_ACTIONS shell fallback failed: " + e.getMessage());
+            e.printStackTrace();
+            return new byte[]{0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
+        }
+    }
+
+    /**
+     * XML 节点信息 (用于构建父子关系)
+     */
+    private static class XmlNodeInfo {
+        String className = "";
+        String text = "";
+        String resId = "";
+        String contentDesc = "";
+        int left, top, right, bottom;
+        boolean isClickable;
+        boolean isScrollable;
+        boolean isEditable;
+        int parentIndex = -1;
+        List<Integer> children = new ArrayList<>();
+    }
+
+    /**
+     * 解析 XML 并过滤可交互节点
+     * 支持父子节点文本关联：如果交互节点没有自己的文本，使用第一个子节点的文本
+     */
+    private void parseXmlDumpForActions(String xmlContent, List<ActionNode> actions, ActionStringPool pool) {
+        Pattern nodePattern = Pattern.compile("<node\\s+([^>]+?)(?:/>|>)");
+        Pattern attrPattern = Pattern.compile("(\\w+(?:-\\w+)?)=\"([^\"]*)\"");
+
+        // 第一遍：解析所有节点并建立父子关系
+        List<XmlNodeInfo> allNodes = new ArrayList<>();
+        java.util.Stack<Integer> parentStack = new java.util.Stack<>();
+        parentStack.push(-1);  // 虚拟根节点
+
+        // 记录每个 <node> 在 XML 中的位置，用于跟踪 </node> 闭合标签
+        List<Integer> nodePositions = new ArrayList<>();
+
+        java.util.regex.Matcher nodeMatcher = nodePattern.matcher(xmlContent);
+
+        while (nodeMatcher.find()) {
+            String attrs = nodeMatcher.group(1);
+            String fullMatch = nodeMatcher.group(0);
+            int matchEnd = nodeMatcher.end();
+
+            XmlNodeInfo info = new XmlNodeInfo();
+
+            // 解析属性
+            java.util.regex.Matcher attrMatcher = attrPattern.matcher(attrs);
+            while (attrMatcher.find()) {
+                String name = attrMatcher.group(1);
+                String value = attrMatcher.group(2);
+
+                switch (name) {
+                    case "class":
+                        info.className = value;
+                        if (value.contains("EditText") || value.contains("AutoCompleteTextView")) {
+                            info.isEditable = true;
+                        }
+                        break;
+                    case "text":
+                        info.text = value;
+                        break;
+                    case "resource-id":
+                        info.resId = value;
+                        break;
+                    case "content-desc":
+                        info.contentDesc = value;
+                        break;
+                    case "bounds":
+                        Pattern boundsPattern = Pattern.compile("\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]");
+                        java.util.regex.Matcher boundsMatcher = boundsPattern.matcher(value);
+                        if (boundsMatcher.find()) {
+                            info.left = Integer.parseInt(boundsMatcher.group(1));
+                            info.top = Integer.parseInt(boundsMatcher.group(2));
+                            info.right = Integer.parseInt(boundsMatcher.group(3));
+                            info.bottom = Integer.parseInt(boundsMatcher.group(4));
+                        }
+                        break;
+                    case "clickable":
+                        info.isClickable = "true".equals(value);
+                        break;
+                    case "scrollable":
+                        info.isScrollable = "true".equals(value);
+                        break;
+                }
+            }
+
+            // 设置父子关系
+            int currentIndex = allNodes.size();
+            info.parentIndex = parentStack.peek();
+
+            // 添加到父节点的子节点列表
+            if (info.parentIndex >= 0 && info.parentIndex < allNodes.size()) {
+                allNodes.get(info.parentIndex).children.add(currentIndex);
+            }
+
+            allNodes.add(info);
+
+            // 如果不是自闭合标签，压入栈
+            if (!fullMatch.endsWith("/>")) {
+                parentStack.push(currentIndex);
+                nodePositions.add(matchEnd);
+            }
+        }
+
+        // 处理 </node> 闭合标签
+        Pattern closePattern = Pattern.compile("</node>");
+        java.util.regex.Matcher closeMatcher = closePattern.matcher(xmlContent);
+        while (closeMatcher.find() && parentStack.size() > 1) {
+            parentStack.pop();
+        }
+
+        System.out.println(TAG + " parseXmlDumpForActions: parsed " + allNodes.size() + " nodes");
+
+        // 第二遍：过滤并输出可交互节点
+        for (int i = 0; i < allNodes.size(); i++) {
+            XmlNodeInfo info = allNodes.get(i);
+
+            boolean isInteractive = info.isClickable || info.isEditable || info.isScrollable;
+            boolean hasText = !info.text.isEmpty() || !info.contentDesc.isEmpty();
+
+            if (isInteractive || hasText) {
+                ActionNode action = new ActionNode();
+
+                // 设置类型
+                if (info.isClickable) action.type |= 0x01;
+                if (info.isEditable) action.type |= 0x02;
+                if (info.isScrollable) action.type |= 0x04;
+                if (!isInteractive && hasText) action.type |= 0x08;
+
+                action.left = info.left;
+                action.top = info.top;
+                action.right = info.right;
+                action.bottom = info.bottom;
+
+                action.classId = pool.addShort(info.className);
+
+                // 获取显示文本 - 关键逻辑：如果交互节点没有文本，从子节点获取
+                String displayText = info.text;
+                if (displayText.isEmpty() && isInteractive) {
+                    // 递归查找第一个有文本的子节点
+                    displayText = findFirstChildTextFromXml(allNodes, i);
+                }
+                if (displayText.isEmpty()) {
+                    displayText = info.contentDesc;
+                }
+                action.textId = pool.addLong(displayText);
+
+                action.resId = pool.addShort(info.resId);
+                action.descId = pool.addShort(info.contentDesc);
+
+                actions.add(action);
+            }
+        }
+    }
+
+    /**
+     * 从 XML 节点树中查找第一个有文本的子节点
+     */
+    private String findFirstChildTextFromXml(List<XmlNodeInfo> allNodes, int nodeIndex) {
+        if (nodeIndex < 0 || nodeIndex >= allNodes.size()) return "";
+
+        XmlNodeInfo node = allNodes.get(nodeIndex);
+
+        // 遍历所有子节点
+        for (int childIndex : node.children) {
+            if (childIndex < 0 || childIndex >= allNodes.size()) continue;
+
+            XmlNodeInfo child = allNodes.get(childIndex);
+
+            // 检查子节点自己的文本
+            if (!child.text.isEmpty()) {
+                return child.text;
+            }
+            if (!child.contentDesc.isEmpty()) {
+                return child.contentDesc;
+            }
+
+            // 递归检查子节点的子节点
+            String childText = findFirstChildTextFromXml(allNodes, childIndex);
+            if (!childText.isEmpty()) {
+                return childText;
+            }
+        }
+
+        return "";
+    }
+
+    /**
+     * 递归收集可交互节点
+     */
+    private void collectActions(Object node, List<ActionNode> actions, ActionStringPool pool) throws Exception {
+        if (node == null) return;
+
+        // 检查是否可见
+        boolean isVisible = (Boolean) isVisibleToUserMethod.invoke(node);
+        if (!isVisible) return;
+
+        // 获取属性
+        boolean isClickable = (Boolean) isClickableMethod.invoke(node);
+        boolean isScrollable = (Boolean) isScrollableMethod.invoke(node);
+        boolean isEditable = isEditableMethod != null && (Boolean) isEditableMethod.invoke(node);
+
+        CharSequence text = (CharSequence) getTextMethod.invoke(node);
+        CharSequence desc = (CharSequence) getContentDescriptionMethod.invoke(node);
+        String textStr = text != null ? text.toString() : "";
+        String descStr = desc != null ? desc.toString() : "";
+
+        // 判断是否是有意义的节点
+        boolean isInteractive = isClickable || isEditable || isScrollable;
+        boolean hasText = !textStr.isEmpty() || !descStr.isEmpty();
+
+        if (isInteractive || hasText) {
+            ActionNode action = new ActionNode();
+
+            // 设置类型
+            if (isClickable) action.type |= 0x01;
+            if (isEditable) action.type |= 0x02;
+            if (isScrollable) action.type |= 0x04;
+            if (!isInteractive && hasText) action.type |= 0x08;  // text_only
+
+            // 获取边界
+            int[] bounds = getNodeBounds(node);
+            action.left = bounds[0];
+            action.top = bounds[1];
+            action.right = bounds[2];
+            action.bottom = bounds[3];
+
+            // 获取类名
+            CharSequence className = (CharSequence) getClassNameMethod.invoke(node);
+            action.classId = pool.addShort(className != null ? className.toString() : "");
+
+            // 获取文本 - 如果自身没有文本，尝试获取第一个有文本的子节点
+            String displayText = textStr;
+            if (displayText.isEmpty() && isInteractive) {
+                displayText = findFirstChildText(node);
+            }
+            if (displayText.isEmpty()) {
+                displayText = descStr;
+            }
+            action.textId = pool.addLong(displayText);
+
+            // Resource ID
+            String resId = (String) getViewIdResourceNameMethod.invoke(node);
+            action.resId = pool.addShort(resId != null ? resId : "");
+
+            // Content Description
+            action.descId = pool.addShort(descStr);
+
+            actions.add(action);
+        }
+
+        // 递归处理子节点
+        int childCount = (Integer) getChildCountMethod.invoke(node);
+        for (int i = 0; i < childCount; i++) {
+            Object child = getChildMethod.invoke(node, i);
+            if (child != null) {
+                collectActions(child, actions, pool);
+            }
+        }
+    }
+
+    /**
+     * 查找第一个有文本的直接子节点
+     */
+    private String findFirstChildText(Object node) throws Exception {
+        int childCount = (Integer) getChildCountMethod.invoke(node);
+        for (int i = 0; i < childCount; i++) {
+            Object child = getChildMethod.invoke(node, i);
+            if (child != null) {
+                CharSequence text = (CharSequence) getTextMethod.invoke(child);
+                if (text != null && text.length() > 0) {
+                    return text.toString();
+                }
+                CharSequence desc = (CharSequence) getContentDescriptionMethod.invoke(child);
+                if (desc != null && desc.length() > 0) {
+                    return desc.toString();
+                }
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 可交互节点结构
+     */
+    private static class ActionNode {
+        byte type;       // 0x01=clickable, 0x02=editable, 0x04=scrollable, 0x08=text_only
+        int left, top, right, bottom;
+        int classId;     // 1 byte
+        int textId;      // 2 bytes (支持更长文本)
+        int resId;       // 1 byte
+        int descId;      // 1 byte
+    }
+
+    /**
+     * DUMP_ACTIONS 专用字符串池
+     * 支持短字符串 (1B ID, 最多 255 个) 和长字符串 (2B ID, 用于 text)
+     */
+    private static class ActionStringPool {
+        private final Map<String, Integer> shortPool = new HashMap<>();
+        private final List<String> shortStrings = new ArrayList<>();
+        private final Map<String, Integer> longPool = new HashMap<>();
+        private final List<String> longStrings = new ArrayList<>();
+
+        /**
+         * 添加短字符串 (class, resId, desc)
+         */
+        public int addShort(String s) {
+            if (s == null || s.isEmpty()) return 0xFF;  // NULL marker
+            if (shortPool.containsKey(s)) return shortPool.get(s);
+            if (shortStrings.size() >= 254) return 0xFF;  // 池满
+
+            int id = shortStrings.size();
+            shortPool.put(s, id);
+            shortStrings.add(s);
+            return id;
+        }
+
+        /**
+         * 添加长字符串 (text)
+         */
+        public int addLong(String s) {
+            if (s == null || s.isEmpty()) return 0xFFFF;  // NULL marker
+            if (longPool.containsKey(s)) return longPool.get(s);
+            if (longStrings.size() >= 65534) return 0xFFFF;  // 池满
+
+            int id = longStrings.size();
+            longPool.put(s, id);
+            longStrings.add(s);
+            return id;
+        }
+
+        /**
+         * 序列化字符串池
+         * 格式: short_count[1B] + short_entries[...] + long_count[2B] + long_entries[...]
+         *   Short entry: len[1B] + data[UTF-8]
+         *   Long entry: len[2B] + data[UTF-8]
+         */
+        public byte[] serialize() {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+            // 短字符串池
+            out.write(shortStrings.size() & 0xFF);
+            for (String s : shortStrings) {
+                byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+                int len = Math.min(bytes.length, 255);
+                out.write(len);
+                out.write(bytes, 0, len);
+            }
+
+            // 长字符串池
+            out.write((longStrings.size() >> 8) & 0xFF);
+            out.write(longStrings.size() & 0xFF);
+            for (String s : longStrings) {
+                byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+                int len = Math.min(bytes.length, 65535);
+                out.write((len >> 8) & 0xFF);
+                out.write(len & 0xFF);
+                out.write(bytes, 0, len);
+            }
+
+            return out.toByteArray();
+        }
     }
 
     /**

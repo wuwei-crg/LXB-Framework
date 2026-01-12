@@ -581,9 +581,9 @@ class LXBLinkClient:
 
         logger.info(f"Sending DUMP_HIERARCHY command: format={format}, compress={compress}")
 
-        # 构建 payload: format[1B] + compress[1B] + max_depth[1B]
+        # 构建 payload: format[1B] + compress[1B] + max_depth[2B]
         import struct
-        payload = struct.pack('>BBB', format, compress, max_depth)
+        payload = struct.pack('>BBH', format, compress, max_depth)
 
         # 使用 send_reliable 发送 (使用更长的超时)
         original_timeout = self._transport.timeout
@@ -792,6 +792,193 @@ class LXBLinkClient:
             logger.info(f"GET_SCREEN_STATE: state={state}")
             return success, state
         return False, 0
+
+    def dump_actions(self) -> dict:
+        """
+        Dump actionable UI nodes for path planning and navigation.
+
+        This method returns only meaningful nodes (clickable, editable, scrollable,
+        or nodes with text). It's optimized for building app navigation maps and
+        semantic matching for AI agents.
+
+        Unlike dump_hierarchy() which returns the complete UI tree, this method
+        filters and flattens the tree to focus on actionable elements, with
+        automatic text association from child nodes to parent containers.
+
+        Returns:
+            Dictionary with structure:
+            {
+                'version': int,
+                'node_count': int,
+                'nodes': [
+                    {
+                        'type': int,          # Bitmask: 0x01=clickable, 0x02=editable,
+                                              # 0x04=scrollable, 0x08=text_only
+                        'bounds': [left, top, right, bottom],
+                        'class': str,
+                        'text': str,          # Associated text (from self or first child)
+                        'resource_id': str,
+                        'content_desc': str,
+                        'clickable': bool,
+                        'editable': bool,
+                        'scrollable': bool,
+                        'text_only': bool,
+                    },
+                    ...
+                ]
+            }
+
+        Raises:
+            LXBTimeoutError: If command times out
+            RuntimeError: If client is not connected
+
+        Example:
+            >>> actions = client.dump_actions()
+            >>> for node in actions['nodes']:
+            ...     if node['clickable'] and node['text']:
+            ...         print(f"Tap target: {node['text']} at {node['bounds']}")
+        """
+        self._ensure_connected()
+
+        logger.info("Sending DUMP_ACTIONS command")
+
+        # 使用 send_reliable 发送 (使用更长的超时)
+        original_timeout = self._transport.timeout
+        self._transport.timeout = self.timeout * 3
+        try:
+            response = self._transport.send_reliable(0x33, b'')  # CMD_DUMP_ACTIONS = 0x33
+        finally:
+            self._transport.timeout = original_timeout
+
+        # 解析响应
+        result = self._parse_dump_actions_response(response)
+
+        logger.info(f"DUMP_ACTIONS successful: {result['node_count']} nodes")
+        return result
+
+    def _parse_dump_actions_response(self, data: bytes) -> dict:
+        """
+        Parse DUMP_ACTIONS binary response.
+
+        Format:
+            version[1B] + count[2B] + nodes[20B each] + string_pool[...]
+
+        ActionNode (20 bytes):
+            type[1B] + bounds[8B] + class_id[1B] + text_id[2B] + res_id[1B] + desc_id[1B] + reserved[6B]
+
+        String pool:
+            short_count[1B] + short_entries[...] + long_count[2B] + long_entries[...]
+        """
+        import struct
+
+        if len(data) < 3:
+            return {'version': 0, 'node_count': 0, 'nodes': []}
+
+        offset = 0
+
+        # Version
+        version = data[offset]
+        offset += 1
+
+        # Node count (2 bytes, big endian)
+        node_count = struct.unpack('>H', data[offset:offset+2])[0]
+        offset += 2
+
+        # Parse nodes (20 bytes each)
+        raw_nodes = []
+        for _ in range(node_count):
+            if offset + 20 > len(data):
+                break
+
+            node_data = data[offset:offset+20]
+            offset += 20
+
+            node_type = node_data[0]
+            left, top, right, bottom = struct.unpack('>HHHH', node_data[1:9])
+            class_id = node_data[9]
+            text_id = struct.unpack('>H', node_data[10:12])[0]
+            res_id = node_data[12]
+            desc_id = node_data[13]
+            # reserved: 14-19
+
+            raw_nodes.append({
+                'type': node_type,
+                'bounds': [left, top, right, bottom],
+                'class_id': class_id,
+                'text_id': text_id,
+                'res_id': res_id,
+                'desc_id': desc_id,
+            })
+
+        # Parse string pool
+        short_strings = []
+        long_strings = []
+
+        if offset < len(data):
+            # Short strings
+            short_count = data[offset]
+            offset += 1
+
+            for _ in range(short_count):
+                if offset >= len(data):
+                    break
+                str_len = data[offset]
+                offset += 1
+                if offset + str_len > len(data):
+                    break
+                s = data[offset:offset+str_len].decode('utf-8', errors='replace')
+                offset += str_len
+                short_strings.append(s)
+
+            # Long strings
+            if offset + 2 <= len(data):
+                long_count = struct.unpack('>H', data[offset:offset+2])[0]
+                offset += 2
+
+                for _ in range(long_count):
+                    if offset + 2 > len(data):
+                        break
+                    str_len = struct.unpack('>H', data[offset:offset+2])[0]
+                    offset += 2
+                    if offset + str_len > len(data):
+                        break
+                    s = data[offset:offset+str_len].decode('utf-8', errors='replace')
+                    offset += str_len
+                    long_strings.append(s)
+
+        # Resolve string IDs to actual strings
+        def get_short_string(id: int) -> str:
+            if id == 0xFF or id >= len(short_strings):
+                return ''
+            return short_strings[id]
+
+        def get_long_string(id: int) -> str:
+            if id == 0xFFFF or id >= len(long_strings):
+                return ''
+            return long_strings[id]
+
+        # Build final nodes
+        nodes = []
+        for raw in raw_nodes:
+            node = {
+                'type': raw['type'],
+                'bounds': raw['bounds'],
+                'class': get_short_string(raw['class_id']),
+                'text': get_long_string(raw['text_id']),
+                'resource_id': get_short_string(raw['res_id']),
+                'content_desc': get_short_string(raw['desc_id']),
+                'clickable': bool(raw['type'] & 0x01),
+                'editable': bool(raw['type'] & 0x02),
+                'scrollable': bool(raw['type'] & 0x04),
+                'text_only': bool(raw['type'] & 0x08),
+            }
+            nodes.append(node)
+
+        return {
+            'version': version,
+            'node_count': node_count,
+            'nodes': nodes,
+        }
 
     def get_screen_size(self) -> tuple[bool, int, int, int]:
         """

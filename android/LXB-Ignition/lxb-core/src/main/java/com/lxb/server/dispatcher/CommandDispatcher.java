@@ -126,6 +126,9 @@ public class CommandDispatcher {
                 case 0x32:  // CMD_FIND_NODE
                     response = perceptionEngine.handleFindNode(payload);
                     break;
+                case 0x33:  // CMD_DUMP_ACTIONS ⭐ NEW
+                    response = perceptionEngine.handleDumpActions(payload);
+                    break;
                 case 0x36:  // CMD_GET_SCREEN_STATE ⭐ NEW
                     response = perceptionEngine.handleGetScreenState();
                     break;

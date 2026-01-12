@@ -96,6 +96,8 @@
                     <button class="btn btn-cmd" data-cmd="get_activity">GET_ACTIVITY</button>
                     <button class="btn btn-cmd" data-cmd="get_screen_state">GET_SCREEN_STATE</button>
                     <button class="btn btn-cmd" data-cmd="get_screen_size">GET_SCREEN_SIZE</button>
+                    <button class="btn btn-cmd btn-highlight" data-cmd="dump_hierarchy">DUMP_HIERARCHY</button>
+                    <button class="btn btn-cmd btn-highlight" data-cmd="dump_actions">DUMP_ACTIONS</button>
 
                     <div class="input-row">
                         <input type="text" id="find-query" placeholder="查找文本/ID" class="input-medium">
@@ -143,7 +145,32 @@
                     </div>
                     <img id="screenshot-image" src="" alt="Screenshot">
                 </div>
+
             </section>
+        </div>
+
+        <!-- UI 树查看器 (模态对话框) -->
+        <div id="hierarchy-modal" class="modal-overlay" style="display: none;">
+            <div class="modal-container">
+                <div class="modal-header">
+                    <div class="modal-title">
+                        <span class="modal-icon">🌳</span>
+                        <h2>UI 层级结构</h2>
+                    </div>
+                    <div class="modal-stats" id="hierarchy-stats"></div>
+                    <button id="btn-close-hierarchy" class="modal-close">&times;</button>
+                </div>
+                <div class="modal-toolbar">
+                    <input type="text" id="hierarchy-search" class="search-input" placeholder="搜索节点 (类名/文本/ID)">
+                    <div class="toolbar-actions">
+                        <button id="btn-view-tree" class="toolbar-btn active" title="树形视图">🌳 树形</button>
+                        <button id="btn-view-flat" class="toolbar-btn" title="扁平视图">📋 扁平</button>
+                        <button id="btn-expand-all" class="toolbar-btn" title="展开全部">▼ 展开</button>
+                        <button id="btn-collapse-all" class="toolbar-btn" title="折叠全部">▶ 折叠</button>
+                    </div>
+                </div>
+                <div id="hierarchy-tree" class="modal-tree"></div>
+            </div>
         </div>
 
         <!-- 底部状态栏 -->

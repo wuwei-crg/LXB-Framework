@@ -207,6 +207,41 @@ public class UiAutomationWrapper {
             System.err.println(TAG + " Direct creation failed: " + e.getMessage());
         }
 
+        // 方法 3: 通过创建新的 Instrumentation 实例获取
+        try {
+            System.out.println(TAG + " Trying new Instrumentation instance...");
+
+            Class<?> instrumentationClass = Class.forName("android.app.Instrumentation");
+            Constructor<?> instrConstructor = instrumentationClass.getDeclaredConstructor();
+            instrConstructor.setAccessible(true);
+            Object instrumentation = instrConstructor.newInstance();
+
+            // 尝试 getUiAutomation(int flags) - Android 7.0+
+            // FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES = 1
+            try {
+                Method getUiAutomation = instrumentationClass.getMethod("getUiAutomation", int.class);
+                Object ua = getUiAutomation.invoke(instrumentation, 1);
+                if (ua != null) {
+                    System.out.println(TAG + " Got UiAutomation via new Instrumentation with flags");
+                    return ua;
+                }
+            } catch (NoSuchMethodException e) {
+                // 尝试无参数版本
+                Method getUiAutomation = instrumentationClass.getMethod("getUiAutomation");
+                Object ua = getUiAutomation.invoke(instrumentation);
+                if (ua != null) {
+                    System.out.println(TAG + " Got UiAutomation via new Instrumentation");
+                    return ua;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println(TAG + " New Instrumentation method failed: " + e.getMessage());
+        }
+
+        // 方法 4: 通过 ShellCommand 模拟 (使用 dumpsys 作为后备)
+        // 这个方法不需要 UiAutomation，而是直接用 shell 命令获取 UI 树
+        System.err.println(TAG + " All UiAutomation methods failed, will use shell fallback for UI operations");
+
         return null;
     }
 
@@ -218,15 +253,22 @@ public class UiAutomationWrapper {
         Class<?> inputEventClass = Class.forName("android.view.InputEvent");
 
         injectInputEventMethod = uiAutoClass.getMethod("injectInputEvent", inputEventClass, boolean.class);
+        System.out.println(TAG + " Cached: injectInputEvent");
+
         getRootInActiveWindowMethod = uiAutoClass.getMethod("getRootInActiveWindow");
+        System.out.println(TAG + " Cached: getRootInActiveWindow");
 
         try {
             getServiceInfoMethod = uiAutoClass.getMethod("getServiceInfo");
             setServiceInfoMethod = uiAutoClass.getMethod("setServiceInfo",
                     Class.forName("android.accessibilityservice.AccessibilityServiceInfo"));
+            System.out.println(TAG + " Cached: getServiceInfo/setServiceInfo");
         } catch (NoSuchMethodException e) {
             // 某些版本可能没有这些方法
+            System.out.println(TAG + " getServiceInfo/setServiceInfo not available");
         }
+
+        System.out.println(TAG + " Reflection methods cached successfully");
     }
 
     /**
@@ -563,6 +605,14 @@ public class UiAutomationWrapper {
      * @return AccessibilityNodeInfo 对象，失败返回 null
      */
     public Object getRootNode() {
+        if (uiAutomation == null) {
+            System.err.println(TAG + " getRootNode failed: uiAutomation is null");
+            return null;
+        }
+        if (getRootInActiveWindowMethod == null) {
+            System.err.println(TAG + " getRootNode failed: getRootInActiveWindowMethod is null");
+            return null;
+        }
         try {
             return getRootInActiveWindowMethod.invoke(uiAutomation);
         } catch (Exception e) {

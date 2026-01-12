@@ -414,6 +414,75 @@ def cmd_find_node():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/command/dump_hierarchy', methods=['POST'])
+def cmd_dump_hierarchy():
+    """发送 DUMP_HIERARCHY 命令，获取完整 UI 层级结构"""
+    if not client:
+        return jsonify({'success': False, 'message': '未连接'}), 400
+
+    data = request.json
+    max_depth = data.get('max_depth', 0)  # 0 = 无限制
+
+    try:
+        hierarchy = client.dump_hierarchy(max_depth=max_depth)
+        node_count = hierarchy.get('node_count', 0)
+        nodes = hierarchy.get('nodes', [])
+
+        # 统计可交互节点
+        clickable_count = sum(1 for n in nodes if n.get('clickable', False))
+        editable_count = sum(1 for n in nodes if n.get('editable', False))
+        scrollable_count = sum(1 for n in nodes if n.get('scrollable', False))
+
+        return jsonify({
+            'success': True,
+            'message': f'获取 UI 树成功: {node_count} 个节点',
+            'response': {
+                'version': hierarchy.get('version', 1),
+                'node_count': node_count,
+                'clickable_count': clickable_count,
+                'editable_count': editable_count,
+                'scrollable_count': scrollable_count,
+                'nodes': nodes
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/command/dump_actions', methods=['POST'])
+def cmd_dump_actions():
+    """发送 DUMP_ACTIONS 命令，获取可交互节点 (用于路径规划)"""
+    if not client:
+        return jsonify({'success': False, 'message': '未连接'}), 400
+
+    try:
+        actions = client.dump_actions()
+        node_count = actions.get('node_count', 0)
+        nodes = actions.get('nodes', [])
+
+        # 统计各类型节点
+        clickable_count = sum(1 for n in nodes if n.get('clickable', False))
+        editable_count = sum(1 for n in nodes if n.get('editable', False))
+        scrollable_count = sum(1 for n in nodes if n.get('scrollable', False))
+        text_only_count = sum(1 for n in nodes if n.get('text_only', False))
+
+        return jsonify({
+            'success': True,
+            'message': f'获取可交互节点成功: {node_count} 个节点',
+            'response': {
+                'version': actions.get('version', 1),
+                'node_count': node_count,
+                'clickable_count': clickable_count,
+                'editable_count': editable_count,
+                'scrollable_count': scrollable_count,
+                'text_only_count': text_only_count,
+                'nodes': nodes
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 # =============================================================================
 # Lifecycle Layer (0x40-0x4F)
 # =============================================================================
