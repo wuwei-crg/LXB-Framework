@@ -1,222 +1,205 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LXB Web Console</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <title>LXB Console Hub</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; font-family: "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0; }
+        .app-shell { display: flex; flex-direction: column; height: 100%; }
+        .shell-header {
+            height: 68px;
+            padding: 0 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #111827;
+            border-bottom: 1px solid #334155;
+            gap: 14px;
+        }
+        .brand { font-size: 18px; color: #93c5fd; font-weight: 600; }
+        .sub { font-size: 12px; color: #94a3b8; margin-left: 10px; }
+        .left { display: flex; align-items: baseline; }
+        .top-nav { display: flex; gap: 8px; }
+        .top-nav button {
+            border: 1px solid #334155;
+            background: #0b1220;
+            color: #cbd5e1;
+            border-radius: 8px;
+            padding: 6px 11px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .top-nav button:hover { border-color: #475569; color: #e2e8f0; }
+        .top-nav button.active { color: #93c5fd; border-color: #3b82f6; background: #172554; }
+        .right { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .global-conn { display: flex; align-items: center; gap: 6px; }
+        .global-conn input {
+            width: 130px;
+            border: 1px solid #334155;
+            background: #0b1220;
+            color: #e2e8f0;
+            border-radius: 8px;
+            padding: 6px 8px;
+            font-size: 12px;
+        }
+        .global-conn input.port { width: 86px; }
+        .global-conn button {
+            border: 1px solid #334155;
+            background: #1e293b;
+            color: #e2e8f0;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .global-conn button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+        .global-conn button:disabled { opacity: 0.55; cursor: not-allowed; }
+        .conn-pill {
+            border: 1px solid #334155;
+            background: #0b1220;
+            color: #94a3b8;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        .shell-content { flex: 1; min-height: 0; }
+        #page-frame {
+            width: 100%;
+            height: 100%;
+            border: 0;
+            background: #0f172a;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <!-- 顶部标题栏 -->
-        <header class="header">
-            <h1>LXB Web Console</h1>
-            <p>WiFi 直连调试控制台 - LXB-Link 协议 v1.0</p>
-            <nav class="nav-links">
-                <a href="/" class="active">Console</a>
-                <a href="/map_builder">Map Builder</a>
-                <a href="/cortex_route">Cortex Route</a>
-            </nav>
-        </header>
-
-        <!-- 连接控制区 -->
-        <section class="connection-panel">
-            <div class="connection-inputs">
-                <label>设备地址:</label>
-                <input type="text" id="host" value="192.168.1.100" placeholder="Android WiFi IP">
-
-                <label>端口:</label>
-                <input type="number" id="port" value="12345" placeholder="端口">
-
-                <button id="btn-connect" class="btn btn-primary">连接</button>
-                <button id="btn-disconnect" class="btn btn-secondary" disabled>断开</button>
-            </div>
-            <div id="connection-status" class="status-disconnected">
-                未连接
-            </div>
-        </section>
-
-        <!-- 主内容区 -->
-        <div class="main-content">
-            <!-- 左侧：指令控制面板 -->
-            <aside class="command-panel">
-                <h2>指令面板</h2>
-
-                <!-- Link Layer -->
-                <div class="command-group">
-                    <h3>Link Layer (0x00-0x0F)</h3>
-                    <button class="btn btn-cmd" data-cmd="handshake">HANDSHAKE</button>
-                    <button class="btn btn-cmd" data-cmd="heartbeat">HEARTBEAT</button>
-                </div>
-
-                <!-- Input Layer -->
-                <div class="command-group">
-                    <h3>Input Layer (0x10-0x1F)</h3>
-                    <div class="input-row">
-                        <input type="number" id="tap-x" value="500" placeholder="X" class="input-small">
-                        <input type="number" id="tap-y" value="800" placeholder="Y" class="input-small">
-                        <button class="btn btn-cmd" data-cmd="tap">TAP</button>
-                    </div>
-
-                    <div class="input-row">
-                        <input type="number" id="swipe-x1" value="500" placeholder="X1" class="input-tiny">
-                        <input type="number" id="swipe-y1" value="1000" placeholder="Y1" class="input-tiny">
-                        <span>-></span>
-                        <input type="number" id="swipe-x2" value="500" placeholder="X2" class="input-tiny">
-                        <input type="number" id="swipe-y2" value="500" placeholder="Y2" class="input-tiny">
-                        <input type="number" id="swipe-duration" value="300" placeholder="ms" class="input-tiny">
-                        <button class="btn btn-cmd" data-cmd="swipe">SWIPE</button>
-                    </div>
-
-                    <div class="input-row">
-                        <input type="number" id="longpress-x" value="500" placeholder="X" class="input-small">
-                        <input type="number" id="longpress-y" value="800" placeholder="Y" class="input-small">
-                        <input type="number" id="longpress-duration" value="1000" placeholder="ms" class="input-small">
-                        <button class="btn btn-cmd" data-cmd="long_press">LONG_PRESS</button>
-                    </div>
-
-                    <button class="btn btn-cmd" data-cmd="unlock">UNLOCK</button>
-                </div>
-
-                <!-- Input Extension -->
-                <div class="command-group">
-                    <h3>Input Extension (0x20-0x2F)</h3>
-                    <div class="input-row">
-                        <input type="text" id="input-text" value="Hello LXB" placeholder="输入文本" class="input-medium">
-                        <button class="btn btn-cmd" data-cmd="input_text">INPUT_TEXT</button>
-                    </div>
-
-                    <div class="input-row key-row">
-                        <button class="btn btn-cmd btn-small" data-cmd="key_home">HOME</button>
-                        <button class="btn btn-cmd btn-small" data-cmd="key_back">BACK</button>
-                        <button class="btn btn-cmd btn-small" data-cmd="key_enter">ENTER</button>
-                        <button class="btn btn-cmd btn-small" data-cmd="key_menu">MENU</button>
-                        <button class="btn btn-cmd btn-small" data-cmd="key_recent">RECENT</button>
-                    </div>
-                </div>
-
-                <!-- Sense Layer -->
-                <div class="command-group">
-                    <h3>Sense Layer (0x30-0x3F)</h3>
-                    <button class="btn btn-cmd" data-cmd="get_activity">GET_ACTIVITY</button>
-                    <button class="btn btn-cmd" data-cmd="get_screen_state">GET_SCREEN_STATE</button>
-                    <button class="btn btn-cmd" data-cmd="get_screen_size">GET_SCREEN_SIZE</button>
-                    <button class="btn btn-cmd btn-highlight" data-cmd="dump_hierarchy">DUMP_HIERARCHY</button>
-                    <button class="btn btn-cmd btn-highlight" data-cmd="dump_actions">DUMP_ACTIONS</button>
-
-                    <div class="input-row">
-                        <input type="text" id="find-query" placeholder="查找文本/ID" class="input-medium">
-                        <button class="btn btn-cmd" data-cmd="find_node">FIND_NODE</button>
-                    </div>
-                </div>
-
-                <!-- Lifecycle Layer -->
-                <div class="command-group">
-                    <h3>Lifecycle Layer (0x40-0x4F)</h3>
-                    <div class="input-row">
-                        <input type="text" id="app-package" placeholder="com.example.app" class="input-medium">
-                    </div>
-                    <div class="input-row">
-                        <button class="btn btn-cmd" data-cmd="launch_app">LAUNCH_APP</button>
-                        <button class="btn btn-cmd btn-danger" data-cmd="stop_app">STOP_APP</button>
-                    </div>
-                    <div class="input-row">
-                        <select id="app-filter" class="input-small">
-                            <option value="user">用户应用</option>
-                            <option value="system">系统应用</option>
-                            <option value="all">全部</option>
-                        </select>
-                        <button class="btn btn-cmd btn-highlight" data-cmd="list_apps">LIST_APPS</button>
-                    </div>
-                </div>
-
-                <!-- Media Layer -->
-                <div class="command-group">
-                    <h3>Media Layer (0x60-0x6F)</h3>
-                    <button class="btn btn-cmd btn-highlight" data-cmd="screenshot">SCREENSHOT</button>
-                </div>
-            </aside>
-
-            <!-- 右侧：日志显示区 -->
-            <section class="log-panel">
-                <div class="log-header">
-                    <h2>日志</h2>
-                    <button id="btn-clear-log" class="btn btn-small">清空</button>
-                </div>
-                <div id="log-container" class="log-container">
-                    <div class="log-entry log-info">
-                        <span class="log-time">00:00:00</span>
-                        <span class="log-message">控制台已启动，请连接设备...</span>
-                    </div>
-                </div>
-
-                <!-- 截图预览区 -->
-                <div id="screenshot-preview" class="screenshot-preview" style="display: none;">
-                    <div class="screenshot-header">
-                        <h3>截图预览</h3>
-                        <button id="btn-close-preview" class="btn btn-small">关闭</button>
-                    </div>
-                    <img id="screenshot-image" src="" alt="Screenshot">
-                </div>
-
-            </section>
+<div class="app-shell">
+    <header class="shell-header">
+        <div class="left">
+            <div class="brand">LXB Console Hub</div>
+            <div class="sub" id="page-title">Command Studio</div>
         </div>
-
-        <!-- UI 树查看器 (模态对话框) -->
-        <div id="hierarchy-modal" class="modal-overlay" style="display: none;">
-            <div class="modal-container">
-                <div class="modal-header">
-                    <div class="modal-title">
-                        <span class="modal-icon">🌳</span>
-                        <h2>UI 层级结构</h2>
-                    </div>
-                    <div class="modal-stats" id="hierarchy-stats"></div>
-                    <button id="btn-close-hierarchy" class="modal-close">&times;</button>
-                </div>
-                <div class="modal-toolbar">
-                    <input type="text" id="hierarchy-search" class="search-input" placeholder="搜索节点 (类名/文本/ID)">
-                    <div class="toolbar-actions">
-                        <button id="btn-view-tree" class="toolbar-btn active" title="树形视图">🌳 树形</button>
-                        <button id="btn-view-flat" class="toolbar-btn" title="扁平视图">📋 扁平</button>
-                        <button id="btn-expand-all" class="toolbar-btn" title="展开全部">▼ 展开</button>
-                        <button id="btn-collapse-all" class="toolbar-btn" title="折叠全部">▶ 折叠</button>
-                    </div>
-                </div>
-                <div id="hierarchy-tree" class="modal-tree"></div>
+        <nav class="top-nav" id="top-nav">
+            <button data-page="command_studio" class="active">Command Studio</button>
+            <button data-page="map_builder">Map Builder</button>
+            <button data-page="map_viewer">Map Viewer</button>
+            <button data-page="cortex_route">Cortex Route</button>
+        </nav>
+        <div class="right">
+            <div class="global-conn">
+                <input id="global-host" value="192.168.1.100" placeholder="Host">
+                <input id="global-port" class="port" type="number" value="12345" placeholder="Port">
+                <button id="global-connect" class="primary">连接</button>
+                <button id="global-disconnect">断开</button>
             </div>
+            <div class="conn-pill" id="global-conn-status">未连接</div>
         </div>
+    </header>
+    <main class="shell-content">
+        <iframe id="page-frame" src="/command_studio" title="LXB internal page"></iframe>
+    </main>
+</div>
 
-        <!-- 应用列表查看器 (模态对话框) -->
-        <div id="apps-modal" class="modal-overlay" style="display: none;">
-            <div class="modal-container">
-                <div class="modal-header">
-                    <div class="modal-title">
-                        <span class="modal-icon">📱</span>
-                        <h2>已安装应用</h2>
-                    </div>
-                    <div class="modal-stats" id="apps-stats"></div>
-                    <button id="btn-close-apps" class="modal-close">&times;</button>
-                </div>
-                <div class="modal-toolbar">
-                    <input type="text" id="apps-search" class="search-input" placeholder="搜索应用包名...">
-                </div>
-                <div id="apps-list" class="modal-tree apps-list"></div>
-            </div>
-        </div>
+<script>
+(function () {
+    const pageMap = {
+        command_studio: { path: '/command_studio', title: 'Command Studio' },
+        map_builder: { path: '/map_builder', title: 'Map Builder' },
+        map_viewer: { path: '/map_viewer', title: 'Map Viewer' },
+        cortex_route: { path: '/cortex_route', title: 'Cortex Route' }
+    };
 
-        <!-- 底部状态栏 -->
-        <footer class="footer">
-            <div class="stats">
-                <span>已发送: <strong id="stats-sent">0</strong></span>
-                <span>成功: <strong id="stats-success">0</strong></span>
-                <span>失败: <strong id="stats-failed">0</strong></span>
-            </div>
-            <div class="footer-info">
-                LXB-Link Protocol v1.0 | Binary First Architecture | WiFi Direct
-            </div>
-        </footer>
-    </div>
+    const nav = document.getElementById('top-nav');
+    const frame = document.getElementById('page-frame');
+    const pageTitle = document.getElementById('page-title');
+    const hostInput = document.getElementById('global-host');
+    const portInput = document.getElementById('global-port');
+    const connectBtn = document.getElementById('global-connect');
+    const disconnectBtn = document.getElementById('global-disconnect');
+    const connStatus = document.getElementById('global-conn-status');
 
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    async function jfetch(url, method = 'GET', body = null) {
+        const opt = { method, headers: { 'Content-Type': 'application/json' } };
+        if (body !== null) opt.body = JSON.stringify(body);
+        const r = await fetch(url, opt);
+        return await r.json();
+    }
+
+    async function refreshConnStatus() {
+        try {
+            const data = await jfetch('/api/status');
+            if (data.connected) {
+                connStatus.textContent = `已连接 ${data.host}:${data.port}`;
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                connStatus.textContent = '未连接';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        } catch (_) {
+            connStatus.textContent = '状态获取失败';
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+        }
+    }
+
+    function setActive(key) {
+        nav.querySelectorAll('button').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.page === key);
+        });
+        pageTitle.textContent = pageMap[key]?.title || 'Command Studio';
+    }
+
+    function loadPage(key, updateHash = true) {
+        if (!pageMap[key]) key = 'command_studio';
+        const target = pageMap[key];
+        setActive(key);
+        if (frame.getAttribute('src') !== target.path) {
+            frame.setAttribute('src', target.path);
+        }
+        if (updateHash) {
+            const nextHash = '#' + key;
+            if (window.location.hash !== nextHash) {
+                window.location.hash = nextHash;
+            }
+        }
+    }
+
+    nav.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-page]');
+        if (!btn) return;
+        loadPage(btn.dataset.page, true);
+    });
+
+    connectBtn.addEventListener('click', async () => {
+        const host = hostInput.value.trim() || '192.168.1.100';
+        const port = Number(portInput.value || '12345');
+        try {
+            await jfetch('/api/connect', 'POST', { host, port });
+        } catch (_) {}
+        await refreshConnStatus();
+    });
+
+    disconnectBtn.addEventListener('click', async () => {
+        try {
+            await jfetch('/api/disconnect', 'POST', {});
+        } catch (_) {}
+        await refreshConnStatus();
+    });
+
+    window.addEventListener('hashchange', () => {
+        const key = (window.location.hash || '#command_studio').slice(1);
+        loadPage(key, false);
+    });
+
+    const initial = (window.location.hash || '#command_studio').slice(1);
+    loadPage(initial, false);
+    refreshConnStatus();
+    setInterval(refreshConnStatus, 2500);
+})();
+</script>
 </body>
 </html>

@@ -7,25 +7,24 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f0f1a;
-            color: #eee;
+            font-family: "Segoe UI", sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
             min-height: 100vh;
         }
 
         .header {
-            background: linear-gradient(135deg, #1a1a3e 0%, #0f0f1a 100%);
+            background: #111827;
             padding: 15px 30px;
-            border-bottom: 1px solid #2a2a4a;
+            border-bottom: 1px solid #334155;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
+        .header { display: none; }
         .header h1 {
             font-size: 20px;
-            background: linear-gradient(90deg, #00d4ff, #7b68ee);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: #93c5fd;
         }
 
         /* 两栏布局 (v5 优化) */
@@ -33,14 +32,14 @@
             display: grid;
             grid-template-columns: 420px 430px 1fr;
             gap: 0;
-            height: calc(100vh - 60px);
+            height: 100vh;
             overflow: hidden;
         }
 
         /* 左侧面板 - 配置+日志 */
         .left-panel {
-            background: #16162a;
-            border-right: 1px solid #2a2a4a;
+            background: #0f172a;
+            border-right: 1px solid #334155;
             overflow-y: auto;
             padding: 16px;
             display: flex;
@@ -48,8 +47,8 @@
         }
 
         .log-panel {
-            background: #121224;
-            border-right: 1px solid #2a2a4a;
+            background: #0f172a;
+            border-right: 1px solid #334155;
             padding: 16px;
             overflow: hidden;
             display: flex;
@@ -58,7 +57,7 @@
 
         /* 右侧主面板 - 截图+节点 */
         .main-panel {
-            background: #0a0a14;
+            background: #0b1220;
             overflow: hidden;
             display: flex;
             flex-direction: column;
@@ -66,15 +65,15 @@
 
         /* 卡片 */
         .card {
-            background: #1e1e38;
+            background: #111827;
             border-radius: 10px;
             padding: 14px;
             margin-bottom: 12px;
-            border: 1px solid #2a2a4a;
+            border: 1px solid #334155;
         }
         .card h3 {
             font-size: 13px;
-            color: #00d4ff;
+            color: #93c5fd;
             margin-bottom: 10px;
             display: flex;
             align-items: center;
@@ -87,7 +86,7 @@
             content: '';
             width: 3px;
             height: 14px;
-            background: linear-gradient(180deg, #00d4ff, #7b68ee);
+            background: linear-gradient(180deg, #3b82f6, #1d4ed8);
             border-radius: 2px;
         }
 
@@ -96,16 +95,16 @@
         .form-group label {
             display: block;
             margin-bottom: 3px;
-            color: #888;
+            color: #94a3b8;
             font-size: 11px;
         }
         .form-group input, .form-group select {
             width: 100%;
             padding: 8px 10px;
-            border: 1px solid #3a3a5a;
+            border: 1px solid #334155;
             border-radius: 6px;
-            background: #0f0f1a;
-            color: #eee;
+            background: #0b1220;
+            color: #e2e8f0;
             font-size: 12px;
             transition: all 0.2s;
         }
@@ -115,17 +114,17 @@
         }
         .form-group input:focus {
             outline: none;
-            border-color: #00d4ff;
-            box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
         }
         .form-group select:focus {
             outline: none;
-            border-color: #00d4ff;
-            box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
         }
         .form-group select option {
-            background: #1a1a2e;
-            color: #eee;
+            background: #0b1220;
+            color: #e2e8f0;
             padding: 8px;
         }
 
@@ -143,30 +142,30 @@
             gap: 6px;
         }
         .btn-primary {
-            background: linear-gradient(135deg, #00d4ff, #7b68ee);
-            color: #0a0a14;
+            background: #2563eb;
+            color: #fff;
         }
         .btn-primary:hover {
             transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
         }
         .btn-primary:disabled {
-            background: #3a3a5a;
+            background: #334155;
             cursor: not-allowed;
             transform: none;
             box-shadow: none;
         }
         .btn-secondary {
-            background: #2a2a4a;
-            color: #aaa;
+            background: #334155;
+            color: #e2e8f0;
         }
         .btn-secondary:hover {
-            background: #3a3a5a;
+            background: #475569;
             color: #fff;
         }
         .btn-success {
-            background: linear-gradient(135deg, #00d4aa, #00a88a);
-            color: #0a0a14;
+            background: #059669;
+            color: #fff;
         }
 
         /* 状态指示器 */
@@ -473,7 +472,7 @@
             display: flex;
             gap: 4px;
             margin-bottom: 12px;
-            background: #0f0f1a;
+            background: #0b1220;
             padding: 4px;
             border-radius: 8px;
         }
@@ -482,27 +481,26 @@
             padding: 8px;
             border: none;
             background: transparent;
-            color: #888;
+            color: #94a3b8;
             border-radius: 6px;
             cursor: pointer;
             font-size: 12px;
             transition: all 0.2s;
         }
         .section-tab.active {
-            background: #2a2a4a;
-            color: #fff;
+            background: #1e293b;
+            color: #e2e8f0;
         }
         .section-tab:hover:not(.active) {
-            background: #1a1a2e;
+            background: #172554;
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🚀 LXB Map Builder</h1>
+        <h1>LXB Map Builder</h1>
         <div style="display: flex; gap: 12px; align-items: center;">
-            <a href="/map_viewer" style="color: #00d4ff; font-size: 12px; text-decoration: none;">🗺️ Map Viewer</a>
-            <select id="explore-version" style="padding: 6px 12px; background: #1e1e38; border: 1px solid #3a3a5a; border-radius: 6px; color: #fff; font-size: 12px;">
+            <select id="explore-version" style="padding: 6px 12px; background: #0b1220; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 12px;">
                 <option value="node" selected>v5 Node驱动 (推荐)</option>
                 <option value="coord">v4 坐标驱动</option>
                 <option value="som">v3 SoM 标注</option>

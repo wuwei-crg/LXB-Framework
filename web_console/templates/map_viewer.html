@@ -8,53 +8,52 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         html, body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f0f1a;
-            color: #eee;
+            font-family: "Segoe UI", sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
             height: 100%;
             overflow: hidden;
         }
 
         .header {
-            background: linear-gradient(135deg, #1a1a3e 0%, #0f0f1a 100%);
+            background: #111827;
             padding: 15px 30px;
-            border-bottom: 1px solid #2a2a4a;
+            border-bottom: 1px solid #334155;
             display: flex;
             justify-content: space-between;
             align-items: center;
             height: 60px;
         }
+        .header { display: none; }
         .header h1 {
             font-size: 20px;
-            background: linear-gradient(90deg, #00d4ff, #7b68ee);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: #93c5fd;
         }
 
         .main-layout {
             display: grid;
             grid-template-columns: 320px 1fr;
-            height: calc(100vh - 60px);
+            height: 100vh;
         }
 
         /* 左侧面板 */
         .left-panel {
-            background: #16162a;
-            border-right: 1px solid #2a2a4a;
+            background: #0f172a;
+            border-right: 1px solid #334155;
             overflow-y: auto;
             padding: 16px;
         }
 
         .card {
-            background: #1e1e38;
+            background: #111827;
             border-radius: 10px;
             padding: 14px;
             margin-bottom: 12px;
-            border: 1px solid #2a2a4a;
+            border: 1px solid #334155;
         }
         .card h3 {
             font-size: 13px;
-            color: #00d4ff;
+            color: #93c5fd;
             margin-bottom: 10px;
             display: flex;
             align-items: center;
@@ -64,7 +63,7 @@
             content: '';
             width: 3px;
             height: 14px;
-            background: linear-gradient(180deg, #00d4ff, #7b68ee);
+            background: linear-gradient(180deg, #3b82f6, #1d4ed8);
             border-radius: 2px;
         }
 
@@ -78,16 +77,16 @@
             transition: all 0.2s;
         }
         .btn-primary {
-            background: linear-gradient(135deg, #00d4ff, #7b68ee);
-            color: #0a0a14;
+            background: #2563eb;
+            color: #fff;
         }
         .btn-primary:hover {
             transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
         }
         .btn-secondary {
-            background: #2a2a4a;
-            color: #eee;
+            background: #334155;
+            color: #e2e8f0;
         }
 
         /* 统计信息 */
@@ -98,7 +97,7 @@
             margin-bottom: 12px;
         }
         .stat-item {
-            background: #0f0f1a;
+            background: #0b1220;
             padding: 12px;
             border-radius: 8px;
             text-align: center;
@@ -106,7 +105,7 @@
         .stat-value {
             font-size: 24px;
             font-weight: bold;
-            color: #00d4ff;
+            color: #93c5fd;
         }
         .stat-label {
             font-size: 11px;
@@ -121,23 +120,23 @@
         }
         .page-item {
             padding: 10px 12px;
-            background: #0f0f1a;
+            background: #0b1220;
             border-radius: 6px;
             margin-bottom: 6px;
             cursor: pointer;
             transition: all 0.2s;
         }
         .page-item:hover {
-            background: #1a1a3e;
+            background: #172554;
         }
         .page-item.selected {
-            background: #2a2a5a;
-            border-left: 3px solid #00d4ff;
+            background: #1e293b;
+            border-left: 3px solid #3b82f6;
         }
         .page-item-id {
             font-size: 12px;
             font-weight: 600;
-            color: #00d4ff;
+            color: #93c5fd;
         }
         .page-item-name {
             font-size: 11px;
@@ -380,10 +379,9 @@
 </head>
 <body>
     <div class="header">
-        <h1>🗺️ LXB Map Viewer</h1>
+        <h1>LXB Map Viewer</h1>
         <div style="display: flex; gap: 12px; align-items: center;">
-            <span id="package-name" style="color: #888; font-size: 12px;">未加载</span>
-            <a href="/map_builder" style="color: #00d4ff; font-size: 12px; text-decoration: none;">← 返回探索</a>
+            <span id="package-name" style="color: #94a3b8; font-size: 12px;">未加载</span>
         </div>
     </div>
 

@@ -273,8 +273,14 @@ class _FixedPlanPlanner:
 
 @app.route('/')
 def index():
-    """主页"""
+    """控制台导航壳页面（内部切换子页面）"""
     return render_template('index.html')
+
+
+@app.route('/command_studio')
+def command_studio():
+    """指令调试页面"""
+    return render_template('command_studio.html')
 
 
 @app.route('/map_builder')

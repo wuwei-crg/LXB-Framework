@@ -7,9 +7,22 @@
     <style>
         * { box-sizing: border-box; }
         body { margin: 0; font-family: "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0; }
-        .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+        .wrap { width: 100%; margin: 0; padding: 12px; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
-        .header a { color: #93c5fd; text-decoration: none; margin-left: 10px; }
+        .header { display: none; }
+        .top-nav { display: flex; gap: 8px; }
+        .top-nav a {
+            color: #cbd5e1;
+            text-decoration: none;
+            font-size: 12px;
+            padding: 6px 10px;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            background: #111827;
+            transition: all 0.2s;
+        }
+        .top-nav a:hover { border-color: #475569; color: #e2e8f0; }
+        .top-nav a.active { color: #93c5fd; border-color: #3b82f6; background: #172554; }
         .grid { display: grid; grid-template-columns: 360px 1fr; gap: 12px; }
         .card { background: #111827; border: 1px solid #334155; border-radius: 10px; padding: 12px; }
         .card h3 { margin: 0 0 10px; font-size: 15px; color: #93c5fd; }
@@ -27,22 +40,23 @@
         .mono { font-family: Consolas, monospace; white-space: pre-wrap; font-size: 12px; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 10px; max-height: 260px; overflow: auto; }
         .log { max-height: 380px; overflow: auto; }
         .log-item { font-family: Consolas, monospace; font-size: 12px; border-bottom: 1px solid #1e293b; padding: 4px 0; }
+        .device-conn-card { display: none; }
     </style>
 </head>
 <body>
 <div class="wrap">
     <div class="header">
         <h2 style="margin:0;">Cortex Route 调试台</h2>
-        <div>
-            <a href="/">控制台</a>
+        <div class="top-nav">
             <a href="/map_builder">Map Builder</a>
             <a href="/map_viewer">Map Viewer</a>
+            <a href="/cortex_route" class="active">Cortex Route</a>
         </div>
     </div>
 
     <div class="grid">
         <div>
-            <div class="card">
+            <div class="card device-conn-card">
                 <h3>设备连接</h3>
                 <div id="connStatus" class="status">未检查</div>
                 <div class="row">
