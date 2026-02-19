@@ -26,6 +26,9 @@
     .btn-secondary { background: #334155; color: #e2e8f0; }
     .btn-ok { background: #059669; color: #fff; }
     .feed-head, .preview-head { padding: 10px 12px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
+    .feed-tools { padding: 8px 12px; border-bottom: 1px solid #1e293b; display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: #94a3b8; }
+    .feed-tools label { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: #94a3b8; cursor: pointer; }
+    .feed-tools input { width: auto; margin: 0; }
     .feed-body { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
     .msg { border: 1px solid #334155; border-radius: 8px; padding: 8px; }
     .msg.user { background: #10223f; border-color: #1d4ed8; }
@@ -149,6 +152,15 @@
         <div style="font-weight:600;">交互信息流</div>
         <div id="runStatus" class="status">空闲</div>
       </div>
+      <div class="feed-tools" id="feedTools">
+        <label><input type="checkbox" id="fltUser" checked />用户</label>
+        <label><input type="checkbox" id="fltLlm" checked />LLM</label>
+        <label><input type="checkbox" id="fltCommand" checked />指令状态</label>
+        <label><input type="checkbox" id="fltExec" checked />执行状态</label>
+        <label><input type="checkbox" id="fltFsm" checked />FSM</label>
+        <label><input type="checkbox" id="fltRoute" checked />Route</label>
+        <label><input type="checkbox" id="fltOther" checked />其他</label>
+      </div>
       <div id="feed" class="feed-body"></div>
     </div>
 
@@ -172,6 +184,7 @@
     let screenInfo = { width: 0, height: 0 };
     let lastTap = null;
     let pendingMapPath = "";
+    let feedRecords = [];
 
     async function jfetch(url, method = "GET", body = null) {
       const opt = { method, headers: { "Content-Type": "application/json" } };
@@ -180,18 +193,49 @@
       return await r.json();
     }
 
-    function feedPush(kind, title, content) {
+    function _feedVisible(rec) {
+      const cat = rec.category || "other";
+      const map = {
+        user: document.getElementById("fltUser")?.checked ?? true,
+        llm: document.getElementById("fltLlm")?.checked ?? true,
+        command: document.getElementById("fltCommand")?.checked ?? true,
+        exec: document.getElementById("fltExec")?.checked ?? true,
+        fsm: document.getElementById("fltFsm")?.checked ?? true,
+        route: document.getElementById("fltRoute")?.checked ?? true,
+        other: document.getElementById("fltOther")?.checked ?? true
+      };
+      return !!map[cat];
+    }
+
+    function _appendFeedItem(rec) {
       const feed = document.getElementById("feed");
       const item = document.createElement("div");
-      item.className = `msg ${kind}`;
+      item.className = `msg ${rec.kind}`;
       const ts = new Date().toLocaleTimeString();
-      item.innerHTML = `<div class="meta">${ts} | ${title}</div><div class="content"></div>`;
-      item.querySelector(".content").textContent = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+      item.innerHTML = `<div class="meta">${ts} | ${rec.title}</div><div class="content"></div>`;
+      item.querySelector(".content").textContent = typeof rec.content === "string" ? rec.content : JSON.stringify(rec.content, null, 2);
       feed.appendChild(item);
       feed.scrollTop = feed.scrollHeight;
     }
 
-    function clearFeed() { document.getElementById("feed").innerHTML = ""; }
+    function rerenderFeed() {
+      const feed = document.getElementById("feed");
+      feed.innerHTML = "";
+      for (const rec of feedRecords) {
+        if (_feedVisible(rec)) _appendFeedItem(rec);
+      }
+    }
+
+    function feedPush(kind, title, content, category = "other") {
+      const rec = { kind, title, content, category };
+      feedRecords.push(rec);
+      if (_feedVisible(rec)) _appendFeedItem(rec);
+    }
+
+    function clearFeed() {
+      feedRecords = [];
+      document.getElementById("feed").innerHTML = "";
+    }
 
     function clearPreview() {
       const img = document.getElementById("taskShot");
@@ -317,7 +361,7 @@
     async function saveConfig() {
       const payload = collectConfig();
       const data = await jfetch("/api/cortex/llm/config", "POST", payload);
-      feedPush("sys", "config/save", data.message || (data.success ? "ok" : "failed"));
+      feedPush("sys", "config/save", data.message || (data.success ? "ok" : "failed"), "other");
     }
 
     async function loadMaps() {
@@ -352,22 +396,29 @@
       while (true) {
         const p = await jfetch(`/api/cortex/task/${taskId}/poll?cursor=${cursor}`);
         if (!p.success) {
-          feedPush("sys", "task/poll", p.message || "poll_failed");
+          feedPush("sys", "task/poll", p.message || "poll_failed", "other");
           return;
         }
         cursor = p.next_cursor || cursor;
         for (const ev of p.events || []) {
           const stage = ev.stage || "fsm";
           const event = ev.event || "event";
-          if (stage === "llm" && event === "prompt") { feedPush("user", `LLM Prompt (${ev.state || ""})`, ev.prompt || ""); continue; }
-          if (stage === "llm" && event === "response") { feedPush("llm", `LLM Response (${ev.state || ""})`, ev.response || ""); continue; }
+          if (stage === "llm" && event === "prompt") { feedPush("user", `LLM Prompt (${ev.state || ""})`, ev.prompt || "", "user"); continue; }
+          if (stage === "llm" && event === "response") { feedPush("llm", `LLM Response (${ev.state || ""})`, ev.response || "", "llm"); continue; }
           if (stage === "exec" && event === "tap_start") { lastTap = { x: Number(ev.x || 0), y: Number(ev.y || 0) }; renderTapMarker(); }
           if (stage === "fsm" && event === "vision_screenshot_ready") { await refreshTaskScreenshot(); }
-          feedPush("sys", `${stage}/${event}`, ev);
+          let category = "other";
+          if (stage === "exec") category = "exec";
+          else if (stage === "route") category = "route";
+          else if (stage === "fsm" && event === "command") category = "command";
+          else if (stage === "fsm") category = "fsm";
+          feedPush("sys", `${stage}/${event}`, ev, category);
         }
         if (p.done) {
           const r = p.result || {};
-          feedPush(p.task_success ? "sys" : "llm", "FSM Result", r);
+          const payload = r.result || r || {};
+          const summary = r.task_summary || payload.task_summary || p.message || (p.task_success ? "任务完成" : "任务失败");
+          feedPush(p.task_success ? "sys" : "llm", "Task Summary", summary, p.task_success ? "fsm" : "llm");
           document.getElementById("runStatus").textContent = p.task_success ? "完成" : `失败: ${p.message || "unknown"}`;
           if (p.message === "task_cancelled") {
             document.getElementById("runStatus").textContent = "已终止";
@@ -381,11 +432,11 @@
 
     async function cancelTask() {
       if (!currentTaskId) {
-        feedPush("sys", "Task Cancel", "当前没有运行中的任务");
+        feedPush("sys", "Task Cancel", "当前没有运行中的任务", "other");
         return;
       }
       const r = await jfetch(`/api/cortex/task/${currentTaskId}/cancel`, "POST", {});
-      feedPush(r.success ? "sys" : "llm", "Task Cancel", r.message || "cancel_failed");
+      feedPush(r.success ? "sys" : "llm", "Task Cancel", r.message || "cancel_failed", r.success ? "other" : "llm");
     }
 
     async function runFsm() {
@@ -395,7 +446,7 @@
       await saveConfig();
 
       document.getElementById("runStatus").textContent = "运行中...";
-      feedPush("user", "User Intent", task);
+      feedPush("user", "User Intent", task, "user");
       clearPreview();
       await loadScreenSize();
 
@@ -433,15 +484,19 @@
 
       const start = await jfetch("/api/cortex/fsm/start", "POST", payload);
       if (!start.success) {
-        feedPush("sys", "FSM Start Failed", start.message || "unknown");
+        feedPush("sys", "FSM Start Failed", start.message || "unknown", "fsm");
         return;
       }
-      feedPush("sys", "FSM Task", `task_id=${start.task_id}`);
+      feedPush("sys", "FSM Task", `task_id=${start.task_id}`, "fsm");
       await pollTask(start.task_id);
     }
 
     window.addEventListener("resize", renderTapMarker);
     (async function init() {
+      ["fltUser", "fltLlm", "fltCommand", "fltExec", "fltFsm", "fltRoute", "fltOther"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener("change", rerenderFeed);
+      });
       await loadConfig();
       await loadScreenSize();
     })();

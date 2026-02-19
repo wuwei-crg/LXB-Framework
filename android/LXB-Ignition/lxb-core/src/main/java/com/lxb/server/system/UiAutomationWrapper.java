@@ -433,13 +433,12 @@ public class UiAutomationWrapper {
      * 点击屏幕
      */
     public boolean click(int x, int y) {
-        if (preferShellInputTouch) {
-            if (clickViaShell(x, y)) {
-                return true;
-            }
+        // Always prefer shell input for touch actions.
+        if (clickViaShell(x, y)) {
+            return true;
         }
 
-        // 优先使用 UiAutomation
+// 优先使用 UiAutomation
         if (injectInputEventMethod != null && uiAutomation != null) {
             try {
                 long downTime = uptimeMillis();
@@ -491,13 +490,12 @@ public class UiAutomationWrapper {
      * 滑动手势
      */
     public boolean swipe(int x1, int y1, int x2, int y2, int duration) {
-        if (preferShellInputTouch) {
-            if (swipeViaShell(x1, y1, x2, y2, duration)) {
-                return true;
-            }
+        // Always prefer shell input for touch actions.
+        if (swipeViaShell(x1, y1, x2, y2, duration)) {
+            return true;
         }
 
-        // 优先使用 UiAutomation
+// 优先使用 UiAutomation
         if (injectInputEventMethod != null && uiAutomation != null) {
             try {
                 long downTime = uptimeMillis();
@@ -569,13 +567,12 @@ public class UiAutomationWrapper {
      * 长按
      */
     public boolean longPress(int x, int y, int duration) {
-        if (preferShellInputTouch) {
-            if (longPressViaShell(x, y, duration)) {
-                return true;
-            }
+        // Always prefer shell input for touch actions.
+        if (longPressViaShell(x, y, duration)) {
+            return true;
         }
 
-        // 优先使用 UiAutomation
+// 优先使用 UiAutomation
         if (injectInputEventMethod != null && uiAutomation != null) {
             try {
                 long downTime = uptimeMillis();

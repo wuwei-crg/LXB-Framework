@@ -63,6 +63,7 @@ class CortexContext:
     last_activity_sig: str = ""
     same_activity_streak: int = 0
     coord_probe: Dict[str, Any] = field(default_factory=dict)
+    llm_history: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class CommandPlanner(Protocol):
@@ -88,49 +89,121 @@ class RuleBasedPlanner:
 
 
 class PromptBuilder:
+    _STATE_FORMATS: Dict[CortexState, Dict[str, Any]] = {
+        CortexState.APP_RESOLVE: {
+            "root": "app_analysis",
+            "fields": ["user_intent", "candidates", "decision", "reflection"],
+        },
+        CortexState.ROUTE_PLAN: {
+            "root": "route_plan_analysis",
+            "fields": ["selected_app", "target_page_candidates", "decision", "reflection"],
+        },
+        CortexState.VISION_ACT: {
+            "root": "vision_analysis",
+            "fields": ["page_state", "step_review", "reflection", "next_step_reasoning", "completion_gate", "done_confirm"],
+        },
+    }
+
     def _common_output_rules(self) -> str:
         return (
             "Output Contract:\n"
-            "1) Output MUST be exactly one DSL instruction line.\n"
-            "2) No JSON, no markdown, no explanations.\n"
-            "3) If you cannot decide safely, output: FAIL <reason>.\n"
-            "4) FAIL must include a non-empty reason.\n"
+            "1) Output MUST follow the state XML-like format exactly.\n"
+            "2) Output MUST contain exactly one <command>...</command>.\n"
+            "3) No JSON, no markdown, no extra prose outside tags.\n"
+            "4) If you cannot decide safely, command must be FAIL <reason>.\n"
         )
 
-    def _dsl_semantics(self, context: CortexContext) -> str:
-        return (
-            "DSL Semantics:\n"
-            "- SET_APP <package_name>: choose exactly one package from AppCandidates.\n"
-            "- ROUTE <package_name> <target_page>: package must match selected app; target_page must come from PageCandidates.\n"
-            "- TAP <x> <y>: tap absolute pixel coordinates.\n"
-            "- SWIPE <x1> <y1> <x2> <y2> <duration_ms>: absolute pixel coordinates + duration in ms.\n"
-            "- INPUT \"<text>\": input text into focused field.\n"
-            "- WAIT <ms>: wait milliseconds.\n"
-            "- BACK: press Android back key once.\n"
-            "- DONE: task complete.\n"
-            "- FAIL <reason>: stop with explicit reason.\n"
-        )
+    def _dsl_semantics(self, allowed_ops: Set[str]) -> str:
+        lines = ["DSL Semantics (only allowed ops):\n"]
+        ordered = sorted([op.upper() for op in allowed_ops])
+        for op in ordered:
+            if op == "SET_APP":
+                lines.append("- SET_APP <package_name>: choose exactly one package from AppCandidates.\n")
+            elif op == "ROUTE":
+                lines.append("- ROUTE <package_name> <target_page>: package must match selected app; target_page must come from PageCandidates.\n")
+            elif op == "TAP":
+                lines.append("- TAP <x> <y>: tap at the target position.\n")
+            elif op == "SWIPE":
+                lines.append("- SWIPE <x1> <y1> <x2> <y2> <duration_ms>: swipe from start to end with duration in ms.\n")
+                lines.append("  SWIPE Rule: x1,y1 MUST be inside the main scrollable content container (not nav bar / title bar / edge controls).\n")
+                lines.append("  Prefer small exploratory swipes near screen/content center.\n")
+                lines.append("  Keep swipe distance small (about 8%~18% of screen height) unless a larger move is explicitly needed.\n")
+                lines.append("  Prefer smoother/longer gesture duration (about 450~900ms).\n")
+            elif op == "INPUT":
+                lines.append("- INPUT \"<text>\": input text into focused field.\n")
+            elif op == "WAIT":
+                lines.append("- WAIT <ms>: wait milliseconds.\n")
+            elif op == "BACK":
+                lines.append("- BACK: press Android back key once.\n")
+            elif op == "DONE":
+                lines.append("- DONE: task complete.\n")
+            elif op == "FAIL":
+                lines.append("- FAIL <reason>: stop with explicit reason.\n")
+        return "".join(lines)
+
+    def _history_snippet(self, context: CortexContext, limit: int = 5) -> str:
+        if not context.llm_history:
+            return "[]"
+        rows = context.llm_history[-max(1, int(limit)) :]
+        return json.dumps(rows, ensure_ascii=False)
+
+    def _lesson_snippet(self, context: CortexContext, limit: int = 5) -> str:
+        if not context.llm_history:
+            return "[]"
+        out = []
+        for item in reversed(context.llm_history):
+            st = item.get("structured") or {}
+            reflection = str(st.get("reflection") or "").strip()
+            if not reflection:
+                continue
+            out.append(
+                {
+                    "state": item.get("state"),
+                    "reflection": reflection,
+                    "command": item.get("command"),
+                }
+            )
+            if len(out) >= max(1, int(limit)):
+                break
+        out.reverse()
+        return json.dumps(out, ensure_ascii=False)
 
     def build(self, state: CortexState, context: CortexContext, allowed_ops: Set[str]) -> str:
+        fmt = self._STATE_FORMATS.get(state)
+        format_block = ""
+        if fmt:
+            root = fmt["root"]
+            fields = fmt["fields"]
+            field_block = "".join([f"<{f}>...</{f}>\n" for f in fields])
+            format_block = (
+                "Output Format (strict):\n"
+                f"<{root}>\n"
+                f"{field_block}"
+                f"</{root}>\n"
+                "<command>DSL_COMMAND_HERE</command>\n"
+            )
+
         if state == CortexState.APP_RESOLVE:
             app_rows = context.app_candidates[:80]
             return "".join(
                 [
                     "State=APP_RESOLVE\n",
                     self._common_output_rules(),
-                    self._dsl_semantics(context),
+                    format_block,
+                    self._dsl_semantics(allowed_ops),
                     f"Allowed: {', '.join(sorted(allowed_ops))}\n",
                     f"UserTask: {context.user_task}\n",
                     f"DeviceInfo(JSON): {json.dumps(context.device_info, ensure_ascii=False)}\n",
                     f"CurrentActivity(JSON): {json.dumps(context.current_activity, ensure_ascii=False)}\n",
                     f"AppCandidates(JSON): {json.dumps(app_rows, ensure_ascii=False)}\n",
+                    f"RecentLLMHistory(JSON): {self._history_snippet(context, limit=5)}\n",
+                    f"RecentLessons(JSON): {self._lesson_snippet(context, limit=5)}\n",
                     "State Goal:\n",
                     "Select the best target app for this task from AppCandidates.\n",
-                    "Return exactly one command: SET_APP <package_name> OR FAIL <reason>.\n",
+                    "Write concise analysis in tags, then output one command in <command>.\n",
                     "Examples:\n",
-                    "SET_APP com.baidu.tieba\n",
-                    "SET_APP com.taobao.taobao\n",
-                    "FAIL no_matching_app",
+                    "<app_analysis><user_intent>签到贴吧</user_intent><candidates>com.baidu.tieba</candidates><decision>贴吧最匹配</decision></app_analysis>\n",
+                    "<command>SET_APP com.baidu.tieba</command>\n",
                 ]
             )
 
@@ -140,56 +213,89 @@ class PromptBuilder:
                 [
                     "State=ROUTE_PLAN\n",
                     self._common_output_rules(),
-                    self._dsl_semantics(context),
+                    format_block,
+                    self._dsl_semantics(allowed_ops),
                     f"Allowed: {', '.join(sorted(allowed_ops))}\n",
                     f"UserTask: {context.user_task}\n",
                     f"SelectedPackage: {context.selected_package}\n",
                     f"CurrentActivity(JSON): {json.dumps(context.current_activity, ensure_ascii=False)}\n",
                     f"DeviceInfo(JSON): {json.dumps(context.device_info, ensure_ascii=False)}\n",
                     f"PageCandidates(JSON): {json.dumps(page_rows, ensure_ascii=False)}\n",
+                    f"RecentLLMHistory(JSON): {self._history_snippet(context, limit=5)}\n",
+                    f"RecentLessons(JSON): {self._lesson_snippet(context, limit=5)}\n",
                     "State Goal:\n",
                     "Pick the best target_page from PageCandidates for the task.\n",
-                    "Return exactly one command: ROUTE <package_name> <target_page> OR FAIL <reason>.\n",
+                    "Write concise analysis in tags, then output one command in <command>.\n",
                     "Examples:\n",
-                    "ROUTE com.baidu.tieba home\n",
-                    "ROUTE com.taobao.taobao home\n",
-                    "FAIL target_page_unknown",
+                    "<route_plan_analysis><selected_app>com.baidu.tieba</selected_app><target_page_candidates>home, sign</target_page_candidates><decision>先到home</decision></route_plan_analysis>\n",
+                    "<command>ROUTE com.baidu.tieba home</command>\n",
                 ]
             )
 
         if state == CortexState.VISION_ACT:
-            w = int(context.device_info.get("width") or 0)
-            h = int(context.device_info.get("height") or 0)
             activity_sig = f"{context.current_activity.get('package','')}/{context.current_activity.get('activity','')}"
             return "".join(
                 [
                     "State=VISION_ACT\n",
                     self._common_output_rules(),
-                    self._dsl_semantics(context),
+                    format_block,
+                    self._dsl_semantics(allowed_ops),
                     f"Allowed: {', '.join(sorted(allowed_ops))}\n",
                     f"UserTask: {context.user_task}\n",
-                    f"ScreenSize: width={w}, height={h}\n",
                     f"CurrentActivity(JSON): {json.dumps(context.current_activity, ensure_ascii=False)}\n",
                     f"ActivitySignature: {activity_sig}\n",
                     f"SameActivityStreak: {context.same_activity_streak}\n",
                     f"LastCommand: {context.last_command or '<none>'}\n",
                     f"SameCommandStreak: {context.same_command_streak}\n",
                     f"RecentRouteTrace(JSON): {json.dumps(context.route_trace[-8:], ensure_ascii=False)}\n",
+                    f"RecentLLMHistory(JSON): {self._history_snippet(context, limit=5)}\n",
+                    f"RecentLessons(JSON): {self._lesson_snippet(context, limit=5)}\n",
                     "Screenshot: attached in this request.\n",
                     "State Goal:\n",
                     "Choose ONLY the next best single action.\n",
                     "Important: one turn = one command. Do NOT output TAP then DONE in the same response.\n",
+                    "SWIPE Constraint: if using SWIPE, start point must be inside the scrollable content container, avoid starting from top/bottom bars.\n",
+                    "SWIPE Strategy: prefer small-distance swipe around center to probe nearby unseen content first.\n",
+                    "SWIPE Default Profile: distance about 8%~18% screen height, duration about 450~900ms.\n",
+                    "Reflection Contract (strict):\n",
+                    "1) You MUST review recent 3~6 steps, not only the last step.\n",
+                    "2) Use <step_review> to list per-step outcomes in order:\n",
+                    "   Step-1: command=..., page_change=..., result=...\n",
+                    "   Step-2: command=..., page_change=..., result=...\n",
+                    "3) In <reflection>, summarize what the agent is actually doing across steps,\n",
+                    "   identify repeated ineffective intents, and state what intent to avoid next.\n",
+                    "4) <command> must be consistent with <reflection> (cannot repeat the avoided intent).\n",
+                    "5) If recent steps show repeated no-progress, prioritize changing action type.\n",
+                    "   Example: TAP -> small SWIPE near center / BACK / WAIT.\n",
+                    "If recent lessons indicate repeated failure, change action type (prefer SWIPE/BACK/WAIT over repeating same TAP intent).\n",
                     "Anti-loop Rule: if activity/screen seems unchanged and last command already repeated, do NOT repeat same TAP.\n",
                     "In that case, choose another action (SWIPE/WAIT/INPUT) or output FAIL with reason.\n",
-                    "If finished now, output DONE only.\n",
+                    "DONE Gate (strict):\n",
+                    "You are NOT allowed to output DONE unless completion evidence and coverage verification both pass.\n",
+                    "Visible complete is NOT equal to global complete.\n",
+                    "Before DONE, <completion_gate> must include:\n",
+                    "- <completion_claim>: what goal is completed and visible evidence.\n",
+                    "- <coverage_check>: passed|failed + reason.\n",
+                    "- <verification_actions>: what checks were already executed.\n",
+                    "Coverage verification rule (universal):\n",
+                    "- If task may involve scrollable/unseen content, verify coverage first.\n",
+                    "- Coverage is considered passed only if one condition holds:\n",
+                    "  A) at least two exploratory swipes with no new actionable targets,\n",
+                    "  B) explicit end-of-list/end marker visible,\n",
+                    "  C) repeated explored states with no new targets after verification actions.\n",
+                    "If coverage_check is failed, command MUST NOT be DONE.\n",
+                    "DONE Confirm Contract (strict):\n",
+                    "You MUST provide <done_confirm> with all fields below:\n",
+                    "- <goal_match>: pass|fail + reason\n",
+                    "- <coverage_check>: pass|fail + reason\n",
+                    "- <new_info_check>: pass|fail + reason\n",
+                    "- <final_decision>: DONE|NOT_DONE\n",
+                    "Hard Rule: command=DONE is allowed ONLY when all three checks are pass and final_decision=DONE.\n",
+                    "If any check is fail, final_decision MUST be NOT_DONE and command MUST NOT be DONE.\n",
+                    "If finished now and DONE gate passed, output DONE only.\n",
                     "Examples:\n",
-                    "TAP 640 420\n",
-                    "SWIPE 640 2200 640 900 350\n",
-                    "INPUT \"搜索词\"\n",
-                    "WAIT 800\n",
-                    "BACK\n",
-                    "DONE\n",
-                    "FAIL blocked_by_popup",
+                    "<vision_analysis><page_state>当前在签到列表页，存在多个可操作入口</page_state><step_review>Step-1: command=TAP 890 67, page_change=进入签到页, result=有效; Step-2: command=TAP 720 420, page_change=无明显变化, result=疑似无效; Step-3: command=TAP 720 420, page_change=无明显变化, result=重复无效</step_review><reflection>最近步骤显示同一动作连续无效，当前策略在原地重复。应避免继续重复该动作意图，改为滚动扫描更多可签到项。</reflection><next_step_reasoning>先下滑一屏扩展可见范围，再选择新的可执行入口</next_step_reasoning><completion_gate><completion_claim>当前仅确认可见区域状态</completion_claim><coverage_check>failed: 仍可能有未显示内容</coverage_check><verification_actions>尚未完成覆盖验证</verification_actions></completion_gate></vision_analysis>\n",
+                    "<command>SWIPE 640 1600 640 1400 650</command>\n",
                 ]
             )
 
@@ -215,6 +321,20 @@ class CortexFSMEngine:
         CortexState.APP_RESOLVE: {"SET_APP", "FAIL"},
         CortexState.ROUTE_PLAN: {"ROUTE", "FAIL"},
         CortexState.VISION_ACT: {"TAP", "SWIPE", "INPUT", "WAIT", "BACK", "DONE", "FAIL"},
+    }
+    _STATE_OUTPUT_TAGS: Dict[CortexState, Dict[str, Any]] = {
+        CortexState.APP_RESOLVE: {
+            "root": "app_analysis",
+            "fields": ["user_intent", "candidates", "decision", "reflection"],
+        },
+        CortexState.ROUTE_PLAN: {
+            "root": "route_plan_analysis",
+            "fields": ["selected_app", "target_page_candidates", "decision", "reflection"],
+        },
+        CortexState.VISION_ACT: {
+            "root": "vision_analysis",
+            "fields": ["page_state", "step_review", "reflection", "next_step_reasoning", "completion_gate", "done_confirm"],
+        },
     }
 
     def __init__(
@@ -278,6 +398,7 @@ class CortexFSMEngine:
             "route_trace": context.route_trace,
             "route_result": context.route_result,
             "command_log": context.command_log,
+            "llm_history": context.llm_history,
         }
         if context.error:
             result["reason"] = context.error
@@ -296,7 +417,13 @@ class CortexFSMEngine:
             self._log(context, "fsm", "planner_call_failed", state=state.value, error=str(e))
             return CortexState.FAIL
         self._log(context, "llm", "response", state=state.value, response=(raw or "")[:4000])
-        raw = self._normalize_model_output(raw, state, context)
+        command_text, structured = self._extract_structured_command(state, raw)
+        if structured:
+            context.llm_history.append(
+                {"state": state.value, "structured": structured, "command": command_text}
+            )
+            self._log(context, "llm", "structured", state=state.value, data=structured, command=command_text)
+        raw = self._normalize_model_output(command_text or raw, state, context)
         try:
             commands = parse_instructions(raw, max_commands=self.fsm_config.max_commands_per_turn)
             validate_allowed(commands, allowed)
@@ -436,7 +563,13 @@ class CortexFSMEngine:
             self._log(context, "fsm", "planner_call_failed", state=CortexState.VISION_ACT.value, error=str(e))
             return CortexState.FAIL
         self._log(context, "llm", "response", state=CortexState.VISION_ACT.value, response=(raw or "")[:4000])
-        raw = self._normalize_model_output(raw, CortexState.VISION_ACT, context)
+        command_text, structured = self._extract_structured_command(CortexState.VISION_ACT, raw)
+        if structured:
+            context.llm_history.append(
+                {"state": CortexState.VISION_ACT.value, "structured": structured, "command": command_text}
+            )
+            self._log(context, "llm", "structured", state=CortexState.VISION_ACT.value, data=structured, command=command_text)
+        raw = self._normalize_model_output(command_text or raw, CortexState.VISION_ACT, context)
 
         try:
             # Vision stage is strictly one-command-per-turn.
@@ -455,12 +588,8 @@ class CortexFSMEngine:
             context.same_command_streak = 1
         context.last_command = current_cmd_sig
 
-        if (
-            cmd0.op == "TAP"
-            and context.same_command_streak >= 3
-            and context.same_activity_streak >= 3
-        ):
-            context.error = "vision_action_loop_detected:repeated_same_tap"
+        if context.same_command_streak >= 3 and context.same_activity_streak >= 3:
+            context.error = "vision_action_loop_detected:repeated_same_command"
             self._log(
                 context,
                 "fsm",
@@ -779,13 +908,48 @@ class CortexFSMEngine:
                 return "BACK"
         return text
 
+    def _extract_structured_command(self, state: CortexState, raw: str) -> tuple[str, Dict[str, Any]]:
+        text = (raw or "").strip()
+        if not text:
+            return "", {}
+
+        spec = self._STATE_OUTPUT_TAGS.get(state)
+        if not spec:
+            return text, {}
+
+        cmd = self._extract_tag_text(text, "command")
+        if not cmd:
+            return text, {}
+
+        root = spec["root"]
+        root_content = self._extract_tag_text(text, root)
+        if not root_content:
+            # soft fallback: keep command only if top-level root missing
+            return cmd.strip(), {}
+
+        fields: Dict[str, str] = {}
+        for f in spec["fields"]:
+            fv = self._extract_tag_text(root_content, f)
+            if fv:
+                fields[f] = fv.strip()
+
+        return cmd.strip(), {"root": root, **fields}
+
+    def _extract_tag_text(self, text: str, tag: str) -> str:
+        m = re.search(rf"<{tag}>\s*([\s\S]*?)\s*</{tag}>", text, flags=re.IGNORECASE)
+        if not m:
+            return ""
+        return m.group(1).strip()
+
     def _probe_coordinate_space(self, context: CortexContext) -> Dict[str, Any]:
         if not bool(self.fsm_config.init_coord_probe_enabled):
             return {}
         if not hasattr(self.planner, "plan_vision"):
             return {}
         try:
-            probe_w, probe_h = 997, 1733
+            # Use square probe canvas to stabilize VLM native coordinate range
+            # and avoid aspect-ratio-induced y-axis inflation.
+            probe_w, probe_h = 1000, 1000
             image_bytes = self._build_coord_probe_image(probe_w, probe_h)
             prompt = (
                 "Coordinate Calibration Task.\n"
@@ -800,7 +964,8 @@ class CortexFSMEngine:
                 "1) Output numbers only.\n"
                 "2) Do NOT add markdown.\n"
                 "3) Use your native coordinate space (do NOT convert on purpose).\n"
-                "4) Be precise; this is for coordinate range calibration.\n"
+                "4) For each corner marker, return the point that is closest to the actual screen corner (not marker center).\n"
+                "5) Be precise; this is for coordinate range calibration.\n"
             )
             raw = self.planner.plan_vision(CortexState.VISION_ACT, prompt, context, image_bytes)
             points = self._parse_coord_probe_response(raw)
@@ -808,11 +973,25 @@ class CortexFSMEngine:
                 self._log(context, "fsm", "coord_probe_failed", reason="parse_failed", raw=(raw or "")[:400])
                 return {}
 
+            x_min = (points["tl"][0] + points["bl"][0]) / 2.0
+            x_max = (points["tr"][0] + points["br"][0]) / 2.0
+            y_min = (points["tl"][1] + points["tr"][1]) / 2.0
+            y_max = (points["bl"][1] + points["br"][1]) / 2.0
+            span_x = max(1e-6, x_max - x_min)
+            span_y = max(1e-6, y_max - y_min)
+
+            # Keep backward-compatible max_x/max_y while introducing range-based mapping.
             max_x = max(v[0] for v in points.values())
             max_y = max(v[1] for v in points.values())
             result = {
                 "max_x": round(max_x, 4),
                 "max_y": round(max_y, 4),
+                "x_min": round(x_min, 4),
+                "x_max": round(x_max, 4),
+                "y_min": round(y_min, 4),
+                "y_max": round(y_max, 4),
+                "span_x": round(span_x, 4),
+                "span_y": round(span_y, 4),
                 "points": points,
                 "probe_size": {"width": probe_w, "height": probe_h},
             }
@@ -827,12 +1006,22 @@ class CortexFSMEngine:
 
         img = Image.new("RGB", (int(width), int(height)), (0, 0, 0))
         draw = ImageDraw.Draw(img)
-        sz = max(40, min(width, height) // 8)
-        # TL red, TR green, BL blue, BR yellow
-        draw.rectangle([0, 0, sz, sz], fill=(255, 0, 0))
-        draw.rectangle([width - sz - 1, 0, width - 1, sz], fill=(0, 255, 0))
-        draw.rectangle([0, height - sz - 1, sz, height - 1], fill=(0, 100, 255))
-        draw.rectangle([width - sz - 1, height - sz - 1, width - 1, height - 1], fill=(255, 220, 0))
+        arm = max(48, min(width, height) // 7)
+        thick = max(6, arm // 8)
+
+        # Draw "L" corner markers so the model can localize real corners better than block centers.
+        # TL red
+        draw.rectangle([0, 0, arm, thick], fill=(255, 0, 0))
+        draw.rectangle([0, 0, thick, arm], fill=(255, 0, 0))
+        # TR green
+        draw.rectangle([width - arm - 1, 0, width - 1, thick], fill=(0, 255, 0))
+        draw.rectangle([width - thick - 1, 0, width - 1, arm], fill=(0, 255, 0))
+        # BL blue
+        draw.rectangle([0, height - thick - 1, arm, height - 1], fill=(0, 100, 255))
+        draw.rectangle([0, height - arm - 1, thick, height - 1], fill=(0, 100, 255))
+        # BR yellow
+        draw.rectangle([width - arm - 1, height - thick - 1, width - 1, height - 1], fill=(255, 220, 0))
+        draw.rectangle([width - thick - 1, height - arm - 1, width - 1, height - 1], fill=(255, 220, 0))
 
         out = io.BytesIO()
         img.save(out, format="PNG")
@@ -888,18 +1077,58 @@ class CortexFSMEngine:
         if w <= 1 or h <= 1 or max_x <= 0.0 or max_y <= 0.0:
             return int(round(xf)), int(round(yf))
 
-        rx = int(round((xf / max_x) * float(w - 1)))
-        ry = int(round((yf / max_y) * float(h - 1)))
+        # If model output already looks like screen pixel coordinates that exceed
+        # the calibrated model range, bypass scaling to avoid edge clamping.
+        if 0.0 <= xf <= float(w - 1) and 0.0 <= yf <= float(h - 1):
+            if xf > max_x * 1.2 or yf > max_y * 1.2:
+                rx = int(round(xf))
+                ry = int(round(yf))
+                self._log(
+                    context,
+                    "exec",
+                    "coord_probe_bypass_absolute",
+                    raw_x=xf,
+                    raw_y=yf,
+                    max_x=max_x,
+                    max_y=max_y,
+                    x=rx,
+                    y=ry,
+                )
+                return rx, ry
+
+        x_min = float(probe.get("x_min") or 0.0)
+        x_max = float(probe.get("x_max") or 0.0)
+        y_min = float(probe.get("y_min") or 0.0)
+        y_max = float(probe.get("y_max") or 0.0)
+
+        # Preferred mapping: range-based affine transform from probe corner band to screen.
+        if x_max > x_min and y_max > y_min:
+            nx = (xf - x_min) / (x_max - x_min)
+            ny = (yf - y_min) / (y_max - y_min)
+            rx = int(round(nx * float(w - 1)))
+            ry = int(round(ny * float(h - 1)))
+            mode = "range_affine"
+        else:
+            # Backward-compatible fallback: max-only scaling.
+            rx = int(round((xf / max_x) * float(w - 1)))
+            ry = int(round((yf / max_y) * float(h - 1)))
+            mode = "max_scale"
+
         rx = max(0, min(w - 1, rx))
         ry = max(0, min(h - 1, ry))
         self._log(
             context,
             "exec",
             "coord_scaled_by_probe",
+            mode=mode,
             raw_x=xf,
             raw_y=yf,
             max_x=max_x,
             max_y=max_y,
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
             x=rx,
             y=ry,
         )

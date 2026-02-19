@@ -327,14 +327,11 @@ class LXBLinkClient:
 
     def screenshot(self) -> bytes:
         """
-        Capture a screenshot from the device (legacy single-frame mode).
+        Capture a screenshot from the device.
 
-        This method uses the legacy CMD_SCREENSHOT which sends the entire
-        screenshot in a single UDP frame. For large screenshots (>50KB),
-        this relies on IP-layer fragmentation which may be inefficient.
-
-        For better performance with large screenshots, use request_screenshot()
-        which implements application-layer fragmentation with selective repeat.
+        Note:
+            This API now always uses fragmented transfer internally to avoid
+            UDP EMSGSIZE on large frames.
 
         Returns:
             Screenshot image data (format depends on device implementation,
@@ -346,11 +343,8 @@ class LXBLinkClient:
         """
         self._ensure_connected()
 
-        logger.info("Sending SCREENSHOT command (legacy mode)")
-        response = self._transport.send_reliable(CMD_SCREENSHOT, b'')
-
-        logger.info(f"SCREENSHOT successful: {len(response)} bytes received")
-        return response
+        logger.info("screenshot() delegates to fragmented request_screenshot()")
+        return self.request_screenshot()
 
     def request_screenshot(self) -> bytes:
         """
@@ -376,9 +370,9 @@ class LXBLinkClient:
         """
         self._ensure_connected()
 
-        logger.info("Requesting screenshot (fragmented mode)")
+        logger.info("Requesting screenshot (fragmented mode only)")
         last_err: Optional[Exception] = None
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 response = self._transport.request_screenshot_fragmented() # type: ignore
                 logger.info(
@@ -389,7 +383,7 @@ class LXBLinkClient:
             except Exception as e:
                 last_err = e
                 logger.warning(
-                    f"Fragmented screenshot failed (attempt={attempt + 1}/2): {e}"
+                    f"Fragmented screenshot failed (attempt={attempt + 1}/3): {e}"
                 )
                 try:
                     # Drain stale frames but keep sequence continuity.
@@ -397,18 +391,9 @@ class LXBLinkClient:
                 except Exception:
                     pass
 
-        logger.warning("Falling back to legacy single-frame screenshot mode")
-        try:
-            response = self.screenshot()
-            logger.info(
-                f"Legacy screenshot successful: {len(response)} bytes "
-                f"({len(response) / 1024:.1f} KB)"
-            )
-            return response
-        except Exception:
-            if last_err:
-                raise last_err
-            raise
+        if last_err:
+            raise last_err
+        raise RuntimeError("fragmented screenshot failed")
 
     def reset_runtime_state(self, reset_seq: bool = True) -> int:
         """

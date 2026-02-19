@@ -227,18 +227,54 @@ def _build_llm_complete_fsm(config: dict):
     )
     temperature = float(config.get('temperature', 0.1))
 
+    def _detect_state(prompt: str) -> str:
+        text = (prompt or '')
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('State='):
+                return line.split('=', 1)[1].strip().upper()
+        return ""
+
+    def _state_system_prompt(state: str) -> str:
+        base = (
+            "You are a finite-state mobile planner.\n"
+            "Follow the state-specific output format strictly.\n"
+            "Output must contain exactly one <command>...</command>.\n"
+            "Do not output markdown.\n"
+        )
+        if state == "APP_RESOLVE":
+            return base + (
+                "Current state: APP_RESOLVE.\n"
+                "Analyze app candidates first, then output one command.\n"
+                "Use <app_analysis>...</app_analysis> plus <command>...\n"
+                "Inside <app_analysis>, include a short <reflection> lesson.\n"
+            )
+        if state == "ROUTE_PLAN":
+            return base + (
+                "Current state: ROUTE_PLAN.\n"
+                "Analyze target page candidates first, then output one command.\n"
+                "Use <route_plan_analysis>...</route_plan_analysis> plus <command>...\n"
+                "Inside <route_plan_analysis>, include a short <reflection> lesson.\n"
+            )
+        if state == "VISION_ACT":
+            return base + (
+                "Current state: VISION_ACT.\n"
+                "Analyze current page first, then reason next step, then output one command.\n"
+                "Use <vision_analysis>...</vision_analysis> plus <command>...\n"
+                "Inside <vision_analysis>, include <step_review> for recent multi-step outcomes, and <reflection> as cumulative lesson from recent 3~5 steps with action intent to avoid next.\n"
+                "One turn = one command.\n"
+            )
+        return base + "Current state unknown. Follow user prompt format exactly.\n"
+
     def complete(prompt: str) -> str:
+        state = _detect_state(prompt)
         response = client.chat.completions.create(
             model=model_name,
             temperature=temperature,
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are a finite-state mobile planner. "
-                        "Output ONLY DSL instruction lines. "
-                        "Do not output JSON, markdown, or explanations."
-                    ),
+                    "content": _state_system_prompt(state),
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -265,6 +301,31 @@ def _build_llm_complete_with_image(config: dict):
     temperature = float(config.get('temperature', 0.1))
     jpeg_quality = int(config.get('vision_jpeg_quality', 35))
 
+    def _detect_state(prompt: str) -> str:
+        text = (prompt or '')
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('State='):
+                return line.split('=', 1)[1].strip().upper()
+        return ""
+
+    def _state_system_prompt(state: str) -> str:
+        base = (
+            "You are a mobile VLM planner.\n"
+            "Follow the state-specific output format strictly.\n"
+            "Output must contain exactly one <command>...</command>.\n"
+            "Do not output markdown.\n"
+        )
+        if state == "VISION_ACT":
+            return base + (
+                "Current state: VISION_ACT.\n"
+                "First describe page_state, then next_step_reasoning, then one command.\n"
+                "Use <vision_analysis>...</vision_analysis> plus <command>...\n"
+                "Inside <vision_analysis>, include <step_review> for recent multi-step outcomes, and <reflection> as cumulative lesson from recent 3~5 steps with action intent to avoid next.\n"
+                "One turn = one command.\n"
+            )
+        return base + "Follow user prompt format exactly.\n"
+
     def _reencode_jpeg(image_bytes: bytes, quality: int) -> bytes:
         quality = max(10, min(95, int(quality)))
         try:
@@ -279,6 +340,7 @@ def _build_llm_complete_with_image(config: dict):
             return image_bytes
 
     def complete_with_image(prompt: str, image_bytes: bytes) -> str:
+        state = _detect_state(prompt)
         compressed = _reencode_jpeg(image_bytes, jpeg_quality)
         image_b64 = base64.b64encode(compressed).decode('ascii')
         response = client.chat.completions.create(
@@ -287,11 +349,7 @@ def _build_llm_complete_with_image(config: dict):
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are a mobile VLM planner. "
-                        "Output ONLY DSL instruction lines (one per line). "
-                        "Do not output JSON, markdown, or explanations."
-                    ),
+                    "content": _state_system_prompt(state),
                 },
                 {
                     "role": "user",
@@ -305,6 +363,78 @@ def _build_llm_complete_with_image(config: dict):
         return (response.choices[0].message.content or '').strip()
 
     return complete_with_image
+
+
+def _build_llm_task_summary(config: dict):
+    from openai import OpenAI
+
+    api_base_url = (config.get('api_base_url') or '').strip()
+    api_key = (config.get('api_key') or '').strip()
+    model_name = (config.get('model_name') or '').strip()
+    if not api_base_url or not api_key or not model_name:
+        raise ValueError('LLM config missing: api_base_url / api_key / model_name')
+
+    client = OpenAI(
+        base_url=api_base_url,
+        api_key=api_key,
+        timeout=float(config.get('timeout', 30)),
+    )
+
+    def summarize(user_task: str, run_result: dict) -> str:
+        llm_hist = (run_result.get('llm_history') or [])[-12:]
+        route_trace = (run_result.get('route_trace') or [])[-12:]
+        status = str(run_result.get('status') or '')
+        state = str(run_result.get('state') or '')
+        reason = str(run_result.get('reason') or '')
+        prompt = "\n".join([
+            "请根据任务执行信息，输出一段简洁任务总结。",
+            "要求：",
+            "1) 只输出总结正文，不要加标题。",
+            "2) 如果任务成功，优先回答用户真正关心的结果内容。",
+            "3) 如果任务失败，说明失败阶段和可能原因。",
+            "4) 中文输出，2~6句。",
+            f"用户意图: {user_task}",
+            f"任务状态: {status}",
+            f"结束状态机: {state}",
+            f"失败原因: {reason}",
+            f"路由轨迹(JSON): {json.dumps(route_trace, ensure_ascii=False)}",
+            f"执行历史(JSON): {json.dumps(llm_hist, ensure_ascii=False)}",
+        ])
+        response = client.chat.completions.create(
+            model=model_name,
+            temperature=0.2,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是移动自动化任务总结助手，只根据给定信息生成事实性总结，不要臆测。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return (response.choices[0].message.content or '').strip()
+
+    return summarize
+
+
+def _fallback_task_summary(user_task: str, run_result: dict) -> str:
+    status = str(run_result.get('status') or '')
+    state = str(run_result.get('state') or '')
+    reason = str(run_result.get('reason') or '')
+    llm_hist = run_result.get('llm_history') or []
+
+    if status == 'success':
+        observations = []
+        for item in reversed(llm_hist):
+            s = item.get('structured') or {}
+            ps = str(s.get('page_state') or '').strip()
+            if ps:
+                observations.append(ps)
+            if len(observations) >= 2:
+                break
+        if observations:
+            return f"任务已完成。针对“{user_task}”，最后观察到：{'；'.join(reversed(observations))}。"
+        return f"任务已完成。已按意图“{user_task}”执行结束。"
+    return f"任务未完成。结束于状态 {state}，原因：{reason or 'unknown'}。"
 
 
 def _extract_json_object(text: str) -> dict:
@@ -2431,6 +2561,7 @@ def _run_cortex_fsm_logic(data: dict, log_callback):
     llm_complete_json = _build_llm_complete(planner_cfg) if use_llm_planner else None
     llm_complete_fsm = _build_llm_complete_fsm(planner_cfg) if use_llm_planner else None
     llm_complete_with_image = _build_llm_complete_with_image(planner_cfg) if use_llm_planner else None
+    llm_task_summary = _build_llm_task_summary(planner_cfg) if use_llm_planner else None
 
     app_resolution = {
         'mode': 'manual' if manual_package else 'auto',
@@ -2571,9 +2702,19 @@ def _run_cortex_fsm_logic(data: dict, log_callback):
         },
     )
     ok = result.get('status') == 'success'
+    task_summary = ''
+    try:
+        if llm_task_summary:
+            task_summary = llm_task_summary(user_task, result)
+    except Exception:
+        task_summary = ''
+    if not task_summary:
+        task_summary = _fallback_task_summary(user_task, result)
+    result['task_summary'] = task_summary
     return {
         'success': ok,
         'message': None if ok else (result.get('reason') or f"fsm_failed@{result.get('state', 'UNKNOWN')}"),
+        'task_summary': task_summary,
         'map_path': map_path,
         'app_resolution': app_resolution,
         'llm_rounds': {'round1_app': round1_app},
