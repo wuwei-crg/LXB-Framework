@@ -29,6 +29,7 @@ from .constants import (
     DEFAULT_TIMEOUT,
     MAX_RETRIES,
     CMD_HANDSHAKE,
+    CMD_HEARTBEAT,
     CMD_TAP,
     CMD_SWIPE,
     CMD_SCREENSHOT,
@@ -205,6 +206,21 @@ class LXBLinkClient:
         response = self._transport.send_reliable(CMD_HANDSHAKE, b'') # pyright: ignore[reportOptionalMemberAccess]
 
         logger.info("Handshake successful")
+        return response
+
+    def heartbeat(self) -> bytes:
+        """
+        Send heartbeat command to verify liveness.
+
+        Returns:
+            Response payload from device heartbeat ACK.
+        """
+        self._ensure_connected()
+
+        logger.info("Sending heartbeat command")
+        response = self._transport.send_reliable(CMD_HEARTBEAT, b'')  # pyright: ignore[reportOptionalMemberAccess]
+
+        logger.info("Heartbeat successful")
         return response
 
     def tap(self, x: int, y: int) -> bytes:

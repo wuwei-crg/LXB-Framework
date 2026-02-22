@@ -35,7 +35,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.lxb_link.client import LXBLinkClient
 from src.lxb_link.constants import (
-    CMD_HEARTBEAT,
     KEY_HOME,
     KEY_BACK,
     KEY_ENTER,
@@ -997,7 +996,7 @@ def cmd_heartbeat():
         return jsonify({'success': False, 'message': '未连接'}), 400
 
     try:
-        response = client._transport.send_reliable(CMD_HEARTBEAT, b'')
+        response = client.heartbeat()
         return jsonify({
             'success': True,
             'message': '心跳成功',
