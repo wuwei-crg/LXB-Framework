@@ -288,6 +288,13 @@ class RouteThenActCortex:
         )
 
     def _resolve_target_page(self, route_map: RouteMap, target_page: str) -> str:
+        requested = (target_page or "").strip()
+        requested_norm = requested.lower()
+
+        # Home-like target should always resolve to actual home page id in map.
+        if requested_norm in {"", "home", "index", "main", "homepage", "start", "首页"}:
+            return _infer_home_page(route_map.pages, route_map.transitions)
+
         if target_page in route_map.pages:
             return target_page
 
@@ -303,6 +310,11 @@ class RouteThenActCortex:
         mapped = id_map.get(target_page)
         if mapped and mapped in route_map.pages:
             return mapped
+
+        # Fallback: if user/planner requested a home-like id that doesn't exist,
+        # route to inferred home instead of failing path lookup.
+        if requested_norm.startswith("home"):
+            return _infer_home_page(route_map.pages, route_map.transitions)
 
         # final fallback: keep original
         return target_page
