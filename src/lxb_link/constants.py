@@ -189,7 +189,7 @@ IMPLEMENTED_COMMANDS_V1 = {
 # =============================================================================
 # Legacy Command Aliases (for backward compatibility during migration)
 # =============================================================================
-# These will be deprecated in v2.0
+# Deprecated compatibility aliases (v1 only, do not use in new code).
 CMD_TAP_LEGACY = 0x03       # Old TAP command ID
 CMD_SWIPE_LEGACY = 0x04     # Old SWIPE command ID
 CMD_SCREENSHOT_LEGACY = 0x09  # Old SCREENSHOT command ID

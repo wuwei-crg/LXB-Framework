@@ -754,7 +754,8 @@ class LXBLinkClient:
 
         Args:
             text: Text to input (UTF-8 string)
-            method: Input method (default: INPUT_METHOD_CLIPBOARD)
+            method: Input method (default: INPUT_METHOD_AUTO)
+                - INPUT_METHOD_AUTO: Select strategy automatically based on text
                 - INPUT_METHOD_ADB: ADB keyboard (most reliable)
                 - INPUT_METHOD_CLIPBOARD: Clipboard paste (fastest, ~50ms)
                 - INPUT_METHOD_ACCESSIBILITY: Accessibility service (best compatibility)
