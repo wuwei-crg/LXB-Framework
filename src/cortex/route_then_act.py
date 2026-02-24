@@ -68,6 +68,8 @@ class Locator:
     class_name: Optional[str] = None
     parent_rid: Optional[str] = None
     bounds_hint: Optional[Tuple[int, int, int, int]] = None
+    locator_index: Optional[int] = None   # 0-based index among peers with same identity
+    locator_count: Optional[int] = None   # total peer count (2-3 when set)
 
 
 @dataclass
@@ -526,6 +528,8 @@ class RouteThenActCortex:
                 class_name=loc.get("class"),
                 parent_rid=loc.get("parent_rid"),
                 bounds_hint=bounds_hint,
+                locator_index=loc.get("locator_index"),
+                locator_count=loc.get("locator_count"),
             )
             transitions.append(
                 RouteEdge(
@@ -845,6 +849,8 @@ class RouteThenActCortex:
                 class_name=locator.get("class"),
                 parent_rid=locator.get("parent_rid"),
                 bounds_hint=tuple(locator.get("bounds_hint")) if locator.get("bounds_hint") else None,
+                locator_index=locator.get("locator_index"),
+                locator_count=locator.get("locator_count"),
             )
             if self._node_exists(loc):
                 if self._tap_locator(loc):
@@ -937,7 +943,7 @@ class RouteThenActCortex:
             try:
                 status, candidates = self.client.find_node_compound(conds, return_mode=1, multi_match=True)
                 if status == 1:
-                    picked = _pick_best_bounds(locator.bounds_hint, candidates)
+                    picked = _pick_best_bounds(locator, candidates)
                     if picked:
                         return picked
             except Exception:
@@ -954,7 +960,7 @@ class RouteThenActCortex:
                     timeout_ms=3000,
                 )
                 if status == 1:
-                    picked = _pick_best_bounds(locator.bounds_hint, candidates)
+                    picked = _pick_best_bounds(locator, candidates)
                     if picked:
                         return picked
             except Exception:
@@ -1137,42 +1143,20 @@ def _bounds_area(bounds: Tuple[int, int, int, int]) -> int:
     return max(0, bounds[2] - bounds[0]) * max(0, bounds[3] - bounds[1])
 
 
-def _iou(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> float:
-    """Calculate Intersection over Union (IoU) of two bounding boxes.
-
-    Args:
-        a: First bounds tuple (left, top, right, bottom)
-        b: Second bounds tuple (left, top, right, bottom)
-
-    Returns:
-        IoU value between 0.0 and 1.0
-    """
-    x1 = max(a[0], b[0])
-    y1 = max(a[1], b[1])
-    x2 = min(a[2], b[2])
-    y2 = min(a[3], b[3])
-    if x2 <= x1 or y2 <= y1:
-        return 0.0
-    inter = (x2 - x1) * (y2 - y1)
-    union = _bounds_area(a) + _bounds_area(b) - inter
-    if union <= 0:
-        return 0.0
-    return inter / union
-
 
 def _pick_best_bounds(
-    hint: Optional[Tuple[int, int, int, int]],
+    locator: "Locator",
     raw_candidates: Any,
 ) -> Optional[Tuple[int, int, int, int]]:
     """Select the best matching bounds from candidates.
 
-    Scoring considers:
-    - IoU with hint bounds
-    - Distance from hint center
-    - Area ratio difference
+    Uses the same strategy as map_builder._pick_best_bounds:
+    1. If locator_index + locator_count set and count <= 3: sort by (top, left)
+       and pick the nth result deterministically.
+    2. Fallback: pick smallest area.
 
     Args:
-        hint: Optional hint bounds for reference
+        locator: Locator whose index/hint fields guide selection
         raw_candidates: Raw bounds candidates from find_node
 
     Returns:
@@ -1181,21 +1165,21 @@ def _pick_best_bounds(
     candidates = _normalize_bounds(raw_candidates)
     if not candidates:
         return None
-    if not hint:
-        candidates.sort(key=_bounds_area)
-        return candidates[0]
 
-    hx, hy = _bounds_center(hint)
-    hint_area = max(1, _bounds_area(hint))
-    scored = []
-    for c in candidates:
-        cx, cy = _bounds_center(c)
-        dist = ((hx - cx) ** 2 + (hy - cy) ** 2) ** 0.5
-        area_ratio = _bounds_area(c) / hint_area
-        score = (_iou(hint, c) * 100.0) + max(0.0, 60.0 - dist / 10.0) - min(40.0, abs(area_ratio - 1.0) * 20.0)
-        scored.append((score, c))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return scored[0][1]
+    # Index-based selection (matches map_builder logic exactly)
+    if (
+        locator.locator_index is not None
+        and locator.locator_count is not None
+        and int(locator.locator_count) <= 3
+        and len(candidates) <= 3
+    ):
+        ordered = sorted(candidates, key=lambda b: (b[1], b[0], b[3], b[2]))
+        idx = int(locator.locator_index)
+        if 0 <= idx < len(ordered):
+            return ordered[idx]
+
+    # Fallback: smallest area
+    return min(candidates, key=_bounds_area)
 
 
 def _node_bounds(node: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
