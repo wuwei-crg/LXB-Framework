@@ -193,6 +193,79 @@ class LXBLinkClient:
                 "Client not connected. Call connect() first or use context manager."
             )
 
+    def _recover(self) -> None:
+        """
+        Hard-reset the channel after a command timeout.
+
+        Steps:
+        1. Drain any stale UDP frames still sitting in the receive buffer.
+        2. Disconnect and reconnect (new ephemeral socket → old late-arriving ACKs
+           go to the now-closed port and are silently discarded by the OS).
+        3. Re-handshake so the server learns the new client port.  Any command
+           the server was still executing will send its ACK to the old port
+           (dead), and the server is now ready to process fresh commands.
+
+        Called automatically by _cmd() on LXBTimeoutError.
+        """
+        try:
+            self._transport.reset_runtime_state(reset_seq=True)  # type: ignore
+        except Exception:
+            pass
+        # reconnect(handshake=False) creates a fresh socket; handshake() below
+        # uses raw send_reliable directly so there is no recursion risk.
+        self.reconnect(handshake=False)
+        self.handshake()
+
+    def _cmd(self, cmd: int, payload: bytes = b"", timeout_factor: float = 1.0) -> bytes:
+        """
+        Send a command with automatic recovery on timeout.
+
+        This is the single entry-point for all reliable commands.  If the
+        first attempt times out, _recover() is called (drain + reconnect +
+        handshake) and the command is retried once with the same timeout.
+
+        Args:
+            cmd:            Command ID (constants.CMD_*)
+            payload:        Command payload bytes
+            timeout_factor: Multiply the socket timeout by this factor for
+                            slow commands (e.g., 3.0 for dump_actions).
+
+        Returns:
+            ACK payload bytes from the device.
+
+        Raises:
+            LXBTimeoutError: If both the initial attempt and the retry fail.
+            RuntimeError:    If not connected.
+        """
+        self._ensure_connected()
+        t = self._transport  # type: ignore
+
+        def _attempt() -> bytes:
+            if timeout_factor != 1.0:
+                orig = t.timeout
+                t.timeout = orig * timeout_factor
+                try:
+                    return t.send_reliable(cmd, payload)
+                finally:
+                    t.timeout = orig
+            return t.send_reliable(cmd, payload)
+
+        try:
+            return _attempt()
+        except LXBTimeoutError as first_err:
+            logger.warning(
+                f"cmd=0x{cmd:02X} timed out — recovering (drain+reconnect+handshake)"
+            )
+            try:
+                self._recover()
+            except Exception as recover_err:
+                logger.error(f"Recovery failed: {recover_err}")
+                raise first_err
+            try:
+                return _attempt()
+            except LXBTimeoutError as retry_err:
+                raise retry_err
+
     def handshake(self) -> bytes:
         """
         Perform handshake with remote device.
@@ -260,7 +333,7 @@ class LXBLinkClient:
         import struct
         payload = struct.pack('>HH', x, y)
 
-        response = self._transport.send_reliable(CMD_TAP, payload) # pyright: ignore[reportOptionalMemberAccess]
+        response = self._cmd(CMD_TAP, payload)
 
         logger.info(f"TAP successful: ({x}, {y})")
         return response
@@ -308,7 +381,7 @@ class LXBLinkClient:
         import struct
         payload = struct.pack('>HHHHH', x1, y1, x2, y2, duration)
 
-        response = self._transport.send_reliable(CMD_SWIPE, payload)
+        response = self._cmd(CMD_SWIPE, payload)
 
         logger.info(f"SWIPE successful")
         return response
@@ -344,7 +417,7 @@ class LXBLinkClient:
         import struct
         payload = struct.pack('>HHH', x, y, duration)
 
-        response = self._transport.send_reliable(CMD_LONG_PRESS, payload)
+        response = self._cmd(CMD_LONG_PRESS, payload)
 
         logger.info(f"LONG_PRESS successful: ({x}, {y})")
         return response
@@ -409,11 +482,18 @@ class LXBLinkClient:
                 logger.warning(
                     f"Fragmented screenshot failed (attempt={attempt + 1}/3): {e}"
                 )
-                try:
-                    # Drain stale frames but keep sequence continuity.
-                    self.reset_runtime_state(reset_seq=False)
-                except Exception:
-                    pass
+                if attempt == 0:
+                    # First failure: drain stale frames, keep seq continuity.
+                    try:
+                        self.reset_runtime_state(reset_seq=False)
+                    except Exception:
+                        pass
+                else:
+                    # Subsequent failures: full recover (drain + reconnect + handshake).
+                    try:
+                        self._recover()
+                    except Exception:
+                        pass
 
         if last_err:
             raise last_err
@@ -440,7 +520,7 @@ class LXBLinkClient:
         self._ensure_connected()
 
         logger.info("Sending WAKE command")
-        response = self._transport.send_reliable(CMD_WAKE, b'') # type: ignore
+        response = self._cmd(CMD_WAKE, b'')
 
         logger.info("WAKE successful")
         return response
@@ -474,7 +554,7 @@ class LXBLinkClient:
         logger.info("Sending GET_ACTIVITY command")
 
         # 使用 send_reliable 发送
-        response = self._transport.send_reliable(CMD_GET_ACTIVITY, b'')
+        response = self._cmd(CMD_GET_ACTIVITY, b'')
 
         # Unpack response
         success, package_name, activity_name = ProtocolFrame.unpack_get_activity_response(response)
@@ -558,7 +638,7 @@ class LXBLinkClient:
         ) + query_bytes
 
         # 使用 send_reliable 发送
-        response = self._transport.send_reliable(CMD_FIND_NODE, payload)
+        response = self._cmd(CMD_FIND_NODE, payload)
 
         # 解析响应
         if return_mode == RETURN_COORDS:
@@ -630,7 +710,7 @@ class LXBLinkClient:
             val_bytes = value.encode('utf-8')
             payload += struct.pack('>BBH', field, op, len(val_bytes)) + val_bytes
 
-        response = self._transport.send_reliable(CMD_FIND_NODE_COMPOUND, payload)
+        response = self._cmd(CMD_FIND_NODE_COMPOUND, payload)
 
         # Response format is identical to FIND_NODE
         if return_mode == RETURN_COORDS:
@@ -714,13 +794,8 @@ class LXBLinkClient:
         import struct
         payload = struct.pack('>BBH', format, compress, max_depth)
 
-        # 使用 send_reliable 发送 (使用更长的超时)
-        original_timeout = self._transport.timeout
-        self._transport.timeout = self.timeout * 3
-        try:
-            response = self._transport.send_reliable(CMD_DUMP_HIERARCHY, payload)
-        finally:
-            self._transport.timeout = original_timeout
+        # 使用更长的超时（通过 _cmd 的 timeout_factor 控制，同时享有自动恢复）
+        response = self._cmd(CMD_DUMP_HIERARCHY, payload, timeout_factor=3.0)
 
         if format == HIERARCHY_FORMAT_BINARY:
             hierarchy, pool = ProtocolFrame.unpack_dump_hierarchy_binary(response)
@@ -808,7 +883,7 @@ class LXBLinkClient:
                 len(text_bytes),
             ) + text_bytes
 
-            response = self._transport.send_reliable(CMD_INPUT_TEXT, payload)
+            response = self._cmd(CMD_INPUT_TEXT, payload)
             if len(response) >= 2:
                 return int(response[0]), int(response[1])
             return 0, int(use_method)
@@ -899,7 +974,7 @@ class LXBLinkClient:
         import struct
         payload = struct.pack('>BB', keycode & 0xFF, action & 0xFF)
 
-        response = self._transport.send_reliable(CMD_KEY_EVENT, payload)
+        response = self._cmd(CMD_KEY_EVENT, payload)
 
         logger.info(f"KEY_EVENT successful: keycode={keycode}")
         return response
@@ -922,7 +997,7 @@ class LXBLinkClient:
         self._ensure_connected()
 
         logger.info("Sending UNLOCK command")
-        response = self._transport.send_reliable(CMD_UNLOCK, b'')
+        response = self._cmd(CMD_UNLOCK, b'')
 
         success = len(response) > 0 and response[0] == 0x01
         logger.info(f"UNLOCK {'successful' if success else 'failed'}")
@@ -942,7 +1017,7 @@ class LXBLinkClient:
         self._ensure_connected()
         mode = b'\x01' if shell_first else b'\x00'
         logger.info(f"Sending SET_TOUCH_MODE: {'shell_first' if shell_first else 'uiautomation_first'}")
-        response = self._transport.send_reliable(CMD_SET_TOUCH_MODE, mode)
+        response = self._cmd(CMD_SET_TOUCH_MODE, mode)
         ok = len(response) > 0 and response[0] == 0x01
         logger.info(f"SET_TOUCH_MODE {'successful' if ok else 'failed'}")
         return ok
@@ -961,7 +1036,7 @@ class LXBLinkClient:
         q = max(1, min(100, int(quality)))
         payload = bytes([q & 0xFF])
         logger.info(f"Sending SET_SCREENSHOT_QUALITY: {q}")
-        response = self._transport.send_reliable(CMD_SET_SCREENSHOT_QUALITY, payload)
+        response = self._cmd(CMD_SET_SCREENSHOT_QUALITY, payload)
         ok = len(response) > 0 and response[0] == 0x01
         logger.info(f"SET_SCREENSHOT_QUALITY {'successful' if ok else 'failed'}")
         return ok
@@ -981,7 +1056,7 @@ class LXBLinkClient:
         self._ensure_connected()
 
         logger.info("Sending GET_SCREEN_STATE command")
-        response = self._transport.send_reliable(CMD_GET_SCREEN_STATE, b'')
+        response = self._cmd(CMD_GET_SCREEN_STATE, b'')
 
         if len(response) >= 2:
             success = response[0] == 0x01
@@ -1039,13 +1114,8 @@ class LXBLinkClient:
 
         logger.info("Sending DUMP_ACTIONS command")
 
-        # 使用 send_reliable 发送 (使用更长的超时)
-        original_timeout = self._transport.timeout
-        self._transport.timeout = self.timeout * 3
-        try:
-            response = self._transport.send_reliable(CMD_DUMP_ACTIONS, b'')
-        finally:
-            self._transport.timeout = original_timeout
+        # 使用更长的超时（通过 _cmd 的 timeout_factor 控制，同时享有自动恢复）
+        response = self._cmd(CMD_DUMP_ACTIONS, b'', timeout_factor=3.0)
 
         # 解析响应
         result = self._parse_dump_actions_response(response)
@@ -1191,7 +1261,7 @@ class LXBLinkClient:
         self._ensure_connected()
 
         logger.info("Sending GET_SCREEN_SIZE command")
-        response = self._transport.send_reliable(CMD_GET_SCREEN_SIZE, b'')
+        response = self._cmd(CMD_GET_SCREEN_SIZE, b'')
 
         if len(response) >= 7:
             import struct
@@ -1231,7 +1301,7 @@ class LXBLinkClient:
         pkg_bytes = package_name.encode('utf-8')
         payload = struct.pack('>BH', flags, len(pkg_bytes)) + pkg_bytes
 
-        response = self._transport.send_reliable(CMD_LAUNCH_APP, payload)
+        response = self._cmd(CMD_LAUNCH_APP, payload)
 
         success = len(response) > 0 and response[0] == 0x01
         logger.info(f"LAUNCH_APP {'successful' if success else 'failed'}")
@@ -1259,7 +1329,7 @@ class LXBLinkClient:
         pkg_bytes = package_name.encode('utf-8')
         payload = struct.pack('>H', len(pkg_bytes)) + pkg_bytes
 
-        response = self._transport.send_reliable(CMD_STOP_APP, payload)
+        response = self._cmd(CMD_STOP_APP, payload)
 
         success = len(response) > 0 and response[0] == 0x01
         logger.info(f"STOP_APP {'successful' if success else 'failed'}")
@@ -1300,7 +1370,7 @@ class LXBLinkClient:
         import json
         payload = struct.pack('>B', filter_code)
 
-        response = self._transport.send_reliable(CMD_LIST_APPS, payload)
+        response = self._cmd(CMD_LIST_APPS, payload)
 
         # Parse response: status[1B] + json_len[2B] + json_data
         if len(response) >= 3:
@@ -1354,7 +1424,7 @@ class LXBLinkClient:
                     f"payload={len(payload)} bytes, reliable={reliable}")
 
         if reliable:
-            response = self._transport.send_reliable(cmd, payload)
+            response = self._cmd(cmd, payload)
             logger.info(f"Custom command successful: 0x{cmd:02X}")
             return response
         else:
