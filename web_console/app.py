@@ -2739,9 +2739,6 @@ def cortex_route_then_act_run():
             use_vlm_takeover=False,
             vlm_takeover_timeout_sec=float(cfg.get('vlm_takeover_timeout_sec', 15.0)),
             route_recovery_enabled=bool(cfg.get('route_recovery_enabled', False)),
-            locator_score_threshold=float(cfg.get('locator_score_threshold', 45.0)),
-            locator_ambiguity_delta=float(cfg.get('locator_ambiguity_delta', 8.0)),
-            hint_distance_limit_px=float(cfg.get('hint_distance_limit_px', 520.0)),
         )
 
         planner = None
@@ -2926,9 +2923,6 @@ def _run_cortex_fsm_logic(data: dict, log_callback, run_client):
         use_vlm_takeover=bool(cfg.get('use_vlm_takeover', False)),
         vlm_takeover_timeout_sec=float(cfg.get('vlm_takeover_timeout_sec', 15.0)),
         route_recovery_enabled=bool(cfg.get('route_recovery_enabled', False)),
-        locator_score_threshold=float(cfg.get('locator_score_threshold', 45.0)),
-        locator_ambiguity_delta=float(cfg.get('locator_ambiguity_delta', 8.0)),
-        hint_distance_limit_px=float(cfg.get('hint_distance_limit_px', 520.0)),
     )
     fsm_cfg_data = data.get('fsm_config') or {}
     fsm_cfg = FSMConfig(

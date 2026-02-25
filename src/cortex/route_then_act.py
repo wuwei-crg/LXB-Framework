@@ -623,8 +623,7 @@ class RouteThenActCortex:
             graph.setdefault(e.from_page, []).append(e)
 
         queue: List[Tuple[str, List[RouteEdge]]] = [(start, [])]
-        visited = {start}
-
+        visited: set = {start}
         while queue:
             current, path = queue.pop(0)
             for edge in graph.get(current, []):
@@ -633,6 +632,36 @@ class RouteThenActCortex:
                 if edge.to_page not in visited:
                     visited.add(edge.to_page)
                     queue.append((edge.to_page, path + [edge]))
+
+        # target_page has no incoming edges — it is a root/launch page.
+        # Return an empty path so the caller just launches the app.
+        indegree: Dict[str, int] = {pid: 0 for pid in route_map.pages}
+        for e in route_map.transitions:
+            if e.to_page in indegree:
+                indegree[e.to_page] += 1
+        if indegree.get(target_page, 0) == 0:
+            return []
+
+        # Diagnose why no path was found.
+        incoming = [e.from_page for e in route_map.transitions if e.to_page == target_page]
+        reachable_from_start = set()
+        q = [start]
+        while q:
+            cur = q.pop()
+            if cur in reachable_from_start:
+                continue
+            reachable_from_start.add(cur)
+            for e in graph.get(cur, []):
+                if e.to_page not in reachable_from_start:
+                    q.append(e.to_page)
+        self._log(
+            "route", "bfs_no_path",
+            start=start,
+            target=target_page,
+            target_in_pages=target_page in route_map.pages,
+            incoming_from=incoming,
+            incoming_reachable=[p for p in incoming if p in reachable_from_start],
+        )
         return None
 
     def _execute_route(self, route_map: RouteMap, path: List[RouteEdge]) -> Tuple[bool, List[str]]:
@@ -1036,9 +1065,13 @@ def _infer_home_page(pages: Dict[str, Dict[str, Any]], transitions: List[RouteEd
     for page_id, page in pages.items():
         if page.get("legacy_page_id") == "home":
             return page_id
-    for page_id in pages:
-        if page_id.startswith("home__"):
-            return page_id
+
+    # Pages without __n_<hash> suffix are original root pages captured at
+    # app launch, not discovered by navigation. Prefer ones named "home".
+    no_hash = [pid for pid in pages if "__n_" not in pid]
+    if no_hash:
+        home_like = [p for p in no_hash if "home" in p.lower()]
+        return home_like[0] if home_like else no_hash[0]
 
     indegree: Dict[str, int] = {k: 0 for k in pages.keys()}
     for e in transitions:
@@ -1046,7 +1079,13 @@ def _infer_home_page(pages: Dict[str, Dict[str, Any]], transitions: List[RouteEd
             indegree[e.to_page] += 1
     roots = [k for k, v in indegree.items() if v == 0]
     if roots:
-        return roots[0]
+        # Among roots, prefer the one with the most outgoing edges —
+        # the home page is typically the most navigation-rich root.
+        out_degree: Dict[str, int] = {k: 0 for k in pages.keys()}
+        for e in transitions:
+            if e.from_page in out_degree:
+                out_degree[e.from_page] += 1
+        return max(roots, key=lambda k: out_degree.get(k, 0))
     return next(iter(pages.keys()))
 
 

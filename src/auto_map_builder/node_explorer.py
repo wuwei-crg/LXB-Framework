@@ -2634,10 +2634,21 @@ NAV|100|950|首页|tab|home
                 if popup_dismissed:
                     self.log("info", f"  已关闭 {dismiss_attempts} 个已知弹窗")
 
-                # 弹窗关闭后重新截图
+                # 先截图再 dump，确保 XML 与截图时刻对齐
+                # （防止弹窗在初次 dump 之后、截图之前才出现）
                 new_screenshot = self._screenshot()
                 if not new_screenshot:
                     continue
+                new_xml = self._dump_actions()
+
+                # 截图后补检一次弹窗（处理延迟出现型弹窗）
+                if self._check_and_dismiss_popups(new_xml):
+                    self.log("info", "  截图后检测到延迟弹窗，已关闭")
+                    time.sleep(0.3)
+                    new_screenshot = self._screenshot()
+                    if not new_screenshot:
+                        continue
+                    new_xml = self._dump_actions()
 
                 new_path = task.path + [task.locator]
 
