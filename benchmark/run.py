@@ -33,7 +33,6 @@ from benchmark.runners.lxb_runner import LXBRunner
 from benchmark.runners.vlm_react import VLMReActRunner
 from benchmark.runners.text_react import TextReActRunner
 from benchmark.runners.vlm_semantic_map import VLMSemanticMapRunner
-from benchmark.coord_calibration import calibrate_once
 
 # Registry of available runners
 RUNNERS = {
@@ -83,7 +82,6 @@ def run_benchmark(
 
     client = _connect()
     print(f"Connected to device.\n")
-    calibrate_once(verbose=True)
 
     try:
         for task in selected_tasks:

@@ -233,3 +233,11 @@ paper/
 benchmark/config.py
 benchmark/results.jsonl
 benchmark/logs/vlm_react_steps.jsonl
+benchmark/logs/
+
+# =============================================================================
+# Comm Benchmark Local Files
+# =============================================================================
+benchmark_comm/config.py
+benchmark_comm/results.jsonl
+benchmark_comm/summary.csv

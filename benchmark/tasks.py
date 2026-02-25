@@ -68,8 +68,8 @@ TASKS: list[BenchmarkTask] = [
         app_name="淘宝",
         package=_TB_PKG,
         map_path=_TB_MAP,
-        user_task="进入搜索页面",
-        target_page="search",
+        user_task="进入关注页面",
+        target_page="follow",
         depth="shallow",
     ),
     BenchmarkTask(

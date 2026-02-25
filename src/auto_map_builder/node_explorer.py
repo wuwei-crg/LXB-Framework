@@ -1293,7 +1293,57 @@ NAV|100|950|首页|tab|home
 
     # === VLM 分析 ===
 
-    def _analyze_page(self, screenshot: bytes) -> Tuple[Optional[PageInfo], List[NavNode], List[PopupInfo], Optional[BlockInfo]]:
+    def _build_analyze_prompt(self, prompt_context: Optional[Dict] = None) -> str:
+        """
+        组装页面分析 Prompt。
+        可选注入“来源节点上下文”，帮助 VLM 更准确判断当前目标页面语义。
+        """
+        prompt = self._PROMPT_ANALYZE
+        if not prompt_context:
+            return prompt
+
+        from_page = str(prompt_context.get("from_page") or "").strip()
+        from_activity = str(prompt_context.get("from_activity") or "").strip()
+        node_name = str(prompt_context.get("node_name") or "").strip()
+        node_type = str(prompt_context.get("node_type") or "").strip()
+        expected_target = str(prompt_context.get("expected_target") or "").strip()
+        locator = prompt_context.get("locator")
+
+        locator_info = {}
+        if isinstance(locator, NodeLocator):
+            locator_info = {
+                "resource_id": locator.resource_id or "",
+                "text": locator.text or "",
+                "content_desc": locator.content_desc or "",
+                "class": locator.class_name or "",
+                "parent_resource_id": locator.parent_resource_id or "",
+                "bounds_hint": list(locator.bounds) if locator.bounds else [],
+                "locator_index": locator.locator_index,
+                "locator_count": locator.locator_count,
+            }
+
+        ctx = {
+            "from_page": from_page,
+            "from_activity": from_activity,
+            "source_node": {
+                "name": node_name,
+                "type": node_type,
+                "expected_target": expected_target,
+                "locator": locator_info,
+            },
+        }
+        ctx_json = json.dumps(ctx, ensure_ascii=False)
+        return (
+            prompt
+            + "\n\n---\n"
+            + "## 附加上下文（辅助判断当前页面目标语义）\n"
+            + "你是从来源页面点击某个节点后到达当前截图。\n"
+            + "请结合“来源节点信息 + 当前截图”判断目标页面；若上下文与截图冲突，以截图为准。\n"
+            + f"CONTEXT_JSON: {ctx_json}\n"
+            + "---\n"
+        )
+
+    def _analyze_page(self, screenshot: bytes, prompt_context: Optional[Dict] = None) -> Tuple[Optional[PageInfo], List[NavNode], List[PopupInfo], Optional[BlockInfo]]:
         """
         分析页面（支持并发推理）
 
@@ -1302,7 +1352,7 @@ NAV|100|950|首页|tab|home
         """
         try:
             w, h = self._screen_width, self._screen_height
-            prompt = self._PROMPT_ANALYZE
+            prompt = self._build_analyze_prompt(prompt_context)
 
             self.log("info", f"VLM 请求中 ({w}x{h}, {len(screenshot)} bytes)...")
 
@@ -2153,7 +2203,17 @@ NAV|100|950|首页|tab|home
 
         def vlm_work():
             try:
-                page_info, nav_nodes, popups, block_info = self._analyze_page(screenshot)
+                page_info, nav_nodes, popups, block_info = self._analyze_page(
+                    screenshot,
+                    prompt_context={
+                        "from_page": from_page,
+                        "from_activity": from_activity,
+                        "node_name": node_name,
+                        "node_type": node_type,
+                        "expected_target": expected_target,
+                        "locator": locator,
+                    },
+                )
                 # 处理弹窗
                 if popups:
                     enriched_popups = self._enrich_popup_locators(popups, xml_nodes)
@@ -2572,7 +2632,17 @@ NAV|100|950|首页|tab|home
                     self.log("info", f"  dump_actions 返回空（WebView/H5 页面），仅记录语义")
                     new_screenshot = self._screenshot()
                     if new_screenshot:
-                        new_page, _, _, _ = self._analyze_page(new_screenshot)
+                        new_page, _, _, _ = self._analyze_page(
+                            new_screenshot,
+                            prompt_context={
+                                "from_page": task.from_page,
+                                "from_activity": post_click_activity,
+                                "node_name": task.name,
+                                "node_type": task.node_type,
+                                "expected_target": task.target_page,
+                                "locator": task.locator,
+                            },
+                        )
                         new_path = task.path + [task.locator]
                         if new_page:
                             target_page_id = self._unique_target_page_id(
@@ -2669,7 +2739,17 @@ NAV|100|950|首页|tab|home
                         self._realtime["last_action"] = f"{task.name} → (分析中...)"
                 else:
                     # 串行模式：VLM 分析
-                    new_page, new_nav_nodes, new_popups, block_info = self._analyze_page(new_screenshot)
+                    new_page, new_nav_nodes, new_popups, block_info = self._analyze_page(
+                        new_screenshot,
+                        prompt_context={
+                            "from_page": task.from_page,
+                            "from_activity": post_click_activity,
+                            "node_name": task.name,
+                            "node_type": task.node_type,
+                            "expected_target": task.target_page,
+                            "locator": task.locator,
+                        },
+                    )
 
                     # ============================================================
                     # VLM 检测到新异常页面 → 提取特征 + 记录 + 重启 + 重新探索

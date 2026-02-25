@@ -23,12 +23,11 @@ from lxb_link.constants import KEY_BACK
 from benchmark.config import (
     VLM_BASE_URL, VLM_API_KEY, VLM_MODEL,
     TEXT_LLM_MODEL, STEP_PAUSE_SEC, APP_LAUNCH_WAIT,
-    VLM_COORD_NORM_MAX, VLM_STRUCTURED_LOG_FILE,
+    VLM_STRUCTURED_LOG_FILE,
 )
 from benchmark.runners.base import BaseRunner, InferenceCounter, LLMClient, RunResult
 from benchmark.tasks import BenchmarkTask
 from benchmark.verification import ExternalVisualVerifier
-from benchmark.coord_calibration import get_coord_probe, map_point_by_probe
 
 _SYSTEM_PROMPT = """\
 You are navigating an Android app step by step to reach a target page.
@@ -42,6 +41,7 @@ Strict type rules:
 _STEP_PROMPT = """\
 App: {app_name}
 Goal: {user_task}
+Screen: {screen_w}x{screen_h} pixels
 Step: {step}/{max_steps}
 History: {history}
 
@@ -60,6 +60,8 @@ Do NOT tap content cards, article titles, or product items.
 Type constraints (MANDATORY):
 - Valid: {{"done": false, "x": 512, "y": 830, "reason": "..."}}.
 - Invalid: x/y as strings, arrays, objects, or multi-candidate lists.
+- x and y must be REAL SCREEN PIXELS:
+  x in [0, {max_x}], y in [0, {max_y}].
 - Return exactly one action object and no prose.
 
 Respond with ONLY the JSON object."""
@@ -83,6 +85,7 @@ class VLMReActRunner(BaseRunner):
 
     METHOD_NAME = "VLM-ReAct"
     MAX_STEPS = 10
+    STEP_INFER_RETRIES = 2
 
     @staticmethod
     def _shell_log(event: str, **kwargs: Any) -> None:
@@ -125,22 +128,9 @@ class VLMReActRunner(BaseRunner):
         if raw_x is None or raw_y is None:
             return None, None, meta
 
-        probe = get_coord_probe()
-        if probe:
-            x, y, mode = map_point_by_probe(
-                probe=probe,
-                raw_x=float(raw_x),
-                raw_y=float(raw_y),
-                screen_w=screen_w,
-                screen_h=screen_h,
-            )
-            meta["coord_mode"] = mode
-        else:
-            raw_x = cls._clamp(raw_x, 0, VLM_COORD_NORM_MAX)
-            raw_y = cls._clamp(raw_y, 0, VLM_COORD_NORM_MAX)
-            x = round(raw_x / VLM_COORD_NORM_MAX * (screen_w - 1))
-            y = round(raw_y / VLM_COORD_NORM_MAX * (screen_h - 1))
-            meta["coord_mode"] = "normalized_0_to_1000"
+        x = cls._clamp(raw_x, 0, max(screen_w - 1, 0))
+        y = cls._clamp(raw_y, 0, max(screen_h - 1, 0))
+        meta["coord_mode"] = "pixel_direct"
 
         x = cls._clamp(x, 0, max(screen_w - 1, 0))
         y = cls._clamp(y, 0, max(screen_h - 1, 0))
@@ -186,6 +176,7 @@ class VLMReActRunner(BaseRunner):
         success = False
         steps = 0
         error = None
+        last_recoverable_error: str | None = None
         history: list[str] = []
         t0 = time.perf_counter()
 
@@ -218,46 +209,60 @@ class VLMReActRunner(BaseRunner):
                 break
 
             history_str = "; ".join(history[-5:]) if history else "none"
+            screen_w, screen_h = self._get_screen_size(client, screenshot)
             prompt = _STEP_PROMPT.format(
                 app_name=task.app_name,
                 user_task=task.user_task,
+                screen_w=screen_w,
+                screen_h=screen_h,
+                max_x=max(screen_w - 1, 0),
+                max_y=max(screen_h - 1, 0),
                 step=step,
                 max_steps=self.MAX_STEPS,
                 history=history_str,
             )
 
-            try:
-                raw = vlm.complete_with_image(_SYSTEM_PROMPT + "\n\n" + prompt, screenshot)
-                action = _parse_response(raw)
-                self._shell_log(
-                    "模型输出",
-                    任务=task.task_id,
-                    轮次=trial,
-                    步骤=step,
-                    done=bool(action.get("done", False)),
-                    back=bool(action.get("back", False)),
-                    x=action.get("x"),
-                    y=action.get("y"),
-                    原因=str(action.get("reason", ""))[:80],
-                )
-            except Exception as exc:
-                error = f"parse_error_step{step}: {exc}"
-                self._shell_log(
-                    "解析失败",
-                    任务=task.task_id,
-                    轮次=trial,
-                    步骤=step,
-                    错误=str(exc),
-                )
-                self._append_structured_log({
-                    "event": "parse_error",
-                    "method": self.METHOD_NAME,
-                    "task_id": task.task_id,
-                    "trial": trial,
-                    "step": step,
-                    "error": str(exc),
-                })
-                break
+            action = None
+            for attempt in range(1, self.STEP_INFER_RETRIES + 1):
+                try:
+                    raw = vlm.complete_with_image(_SYSTEM_PROMPT + "\n\n" + prompt, screenshot)
+                    action = _parse_response(raw)
+                    self._shell_log(
+                        "模型输出",
+                        任务=task.task_id,
+                        轮次=trial,
+                        步骤=step,
+                        尝试=attempt,
+                        done=bool(action.get("done", False)),
+                        back=bool(action.get("back", False)),
+                        x=action.get("x"),
+                        y=action.get("y"),
+                        原因=str(action.get("reason", ""))[:80],
+                    )
+                    break
+                except Exception as exc:
+                    last_recoverable_error = f"parse_error_step{step}: {exc}"
+                    self._shell_log(
+                        "解析失败",
+                        任务=task.task_id,
+                        轮次=trial,
+                        步骤=step,
+                        尝试=attempt,
+                        错误=str(exc),
+                    )
+                    self._append_structured_log({
+                        "event": "parse_error",
+                        "method": self.METHOD_NAME,
+                        "task_id": task.task_id,
+                        "trial": trial,
+                        "step": step,
+                        "attempt": attempt,
+                        "error": str(exc),
+                    })
+                    time.sleep(0.4)
+            if action is None:
+                # Recoverable: continue next step instead of hard fail.
+                continue
 
             if action.get("done") is True:
                 # Backward compatibility for legacy prompts: ignore self-reported done.
@@ -331,10 +336,9 @@ class VLMReActRunner(BaseRunner):
                     break
                 continue
 
-            screen_w, screen_h = self._get_screen_size(client, screenshot)
             x, y, coord_meta = self._resolve_tap_coords(action, screen_w, screen_h)
             if x is None or y is None:
-                error = f"invalid_coords_step{step}"
+                last_recoverable_error = f"invalid_coords_step{step}"
                 self._shell_log(
                     "坐标无效",
                     任务=task.task_id,
@@ -353,9 +357,9 @@ class VLMReActRunner(BaseRunner):
                     "screen_w": screen_w,
                     "screen_h": screen_h,
                 })
-                break
+                continue
             if x == 0 and y == 0:
-                error = f"zero_coords_step{step}"
+                last_recoverable_error = f"zero_coords_step{step}"
                 self._shell_log(
                     "坐标为零",
                     任务=task.task_id,
@@ -375,7 +379,7 @@ class VLMReActRunner(BaseRunner):
                     "screen_w": screen_w,
                     "screen_h": screen_h,
                 })
-                break
+                continue
 
             client.tap(x, y)
             self._shell_log(
@@ -391,7 +395,8 @@ class VLMReActRunner(BaseRunner):
                 屏幕宽=screen_w,
                 屏幕高=screen_h,
             )
-            history.append(f"step{step}:tap({x},{y}) {action.get('reason','')}"[:60])
+            # Keep history semantic-only; do not leak concrete coordinates into next-step prompt.
+            history.append(f"step{step}:tap({action.get('reason','')})"[:60])
             steps = step
             self._append_structured_log({
                 "event": "step_action",
@@ -435,7 +440,7 @@ class VLMReActRunner(BaseRunner):
                 success = True
                 break
         else:
-            error = "max_steps_exceeded"
+            error = "max_steps_exceeded" if not last_recoverable_error else f"max_steps_exceeded:{last_recoverable_error}"
 
         latency = time.perf_counter() - t0
         final_pkg, final_act = self._get_final_activity(client)
