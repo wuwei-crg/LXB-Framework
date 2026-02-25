@@ -34,6 +34,7 @@ Example:
 """
 
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -434,8 +435,9 @@ class RouteThenActCortex:
     def run(
         self,
         user_task: str,
-        map_path: str,
+        map_path: Optional[str] = None,
         start_page: Optional[str] = None,
+        package_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute the Route-Then-Act workflow.
 
@@ -448,8 +450,9 @@ class RouteThenActCortex:
 
         Args:
             user_task: Natural language description of the task
-            map_path: Path to the route map JSON file
+            map_path: Path to the route map JSON file (None = skip routing, launch app directly)
             start_page: Optional starting page ID. If None, infers home page.
+            package_name: Package name to launch when map_path is None
 
         Returns:
             Dict containing execution results:
@@ -461,6 +464,29 @@ class RouteThenActCortex:
                 - vlm_result: Action engine result if provided
         """
         self._task_id = str(uuid.uuid4())
+
+        # ── No-map path: skip ROUTE_PLAN/ROUTING, go straight to VISION_ACT ──
+        if not map_path or not os.path.exists(map_path):
+            if not package_name:
+                return {"status": "failed", "reason": "no_map_and_no_package"}
+            self._log("route", "no_map", result="ok", package_name=package_name,
+                      note="map unavailable, skipping to vision")
+            self.client.launch_app(package_name, clear_task=True)
+            time.sleep(1.5)
+            context = {
+                "task_id": self._task_id,
+                "package_name": package_name,
+                "target_page": None,
+                "route_trace": [],
+            }
+            if not self.action_engine:
+                self._log("vlm", "handoff", result="ok", note="no_action_engine")
+                return {"status": "success", **context, "route_only": True, "vlm_result": None}
+            self._log("vlm", "handoff", result="ok")
+            result = self.action_engine.execute(user_task, self.client)
+            return {"status": "success", **context, "vlm_result": result}
+
+        # ── Normal path ──────────────────────────────────────────────────────
         route_map = self._load_map(map_path)
 
         plan = self.planner.plan(user_task, route_map)

@@ -2720,8 +2720,6 @@ def cortex_route_then_act_run():
                     app_resolution['reason'] = 'llm planner disabled'
 
             map_path = _pick_latest_map_file(base_dir, selected_package or None)
-            if not map_path:
-                return jsonify({'success': False, 'message': f'no map file found for package: {selected_package}'}), 404
 
         # map path provided -> derive selected package from file path if possible
         if map_path:
@@ -2743,14 +2741,16 @@ def cortex_route_then_act_run():
 
         planner = None
         if llm_complete:
-            # Round-2: for selected app map, infer target_page
-            round2_page = _select_target_page_by_llm(llm_complete, user_task, map_path)
-            tp = (round2_page.get('target_page') or '').strip()
-            if tp:
-                selected_pkg = app_resolution.get('selected_package') or ''
-                planner = _FixedPlanPlanner(selected_pkg, tp)
+            if map_path:
+                # Round-2: for selected app map, infer target_page
+                round2_page = _select_target_page_by_llm(llm_complete, user_task, map_path)
+                tp = (round2_page.get('target_page') or '').strip()
+                if tp:
+                    selected_pkg = app_resolution.get('selected_package') or ''
+                    planner = _FixedPlanPlanner(selected_pkg, tp)
+                else:
+                    planner = MapPromptPlanner(llm_complete)
             else:
-                # Fallback: keep previous planner behavior if round-2 parse failed
                 planner = MapPromptPlanner(llm_complete)
 
         logs = []
@@ -2770,6 +2770,7 @@ def cortex_route_then_act_run():
                 user_task=user_task,
                 map_path=map_path,
                 start_page=(data.get('start_page') or None),
+                package_name=selected_package or None,
             )
 
         plan_event = next((x for x in logs if x.get('event') == 'plan_ready'), {})
@@ -2864,8 +2865,6 @@ def _run_cortex_fsm_logic(data: dict, log_callback, run_client):
             map_ready_apps = [a for a in installed_apps if _has_map_for_package(base_dir, a.get('package', ''))]
             app_candidates_for_fsm = installed_apps[:] if installed_apps else map_ready_apps[:]
             app_resolution['candidate_count'] = len(map_ready_apps)
-            if not map_ready_apps:
-                raise RuntimeError('no installed app with local map found')
 
             if llm_complete_json:
                 try:
@@ -2884,26 +2883,31 @@ def _run_cortex_fsm_logic(data: dict, log_callback, run_client):
                     app_resolution['selected_package'] = picked_pkg
                     app_resolution['reason'] = picked.get('reason', '')
                     if not _has_map_for_package(base_dir, selected_package):
-                        selected_package = map_ready_apps[0].get('package')
-                        app_resolution['mode'] = 'llm_no_map_fallback'
-                        app_resolution['selected_package'] = selected_package
-                        app_resolution['reason'] = 'llm selected app has no map, fallback to first map-ready app'
+                        app_resolution['mode'] = 'llm_no_map'
+                        app_resolution['note'] = 'no map for selected app; will use vision-only mode'
                 else:
-                    selected_package = map_ready_apps[0].get('package')
-                    app_resolution['mode'] = 'fallback_first_candidate'
-                    app_resolution['selected_package'] = selected_package
-                    app_resolution['reason'] = 'llm timeout/invalid package, fallback to first candidate'
+                    fallback_list = map_ready_apps or installed_apps
+                    if fallback_list:
+                        selected_package = fallback_list[0].get('package')
+                        app_resolution['mode'] = 'fallback_first_candidate'
+                        app_resolution['selected_package'] = selected_package
+                        app_resolution['reason'] = 'llm timeout/invalid package, fallback to first candidate'
+                    else:
+                        raise RuntimeError('no installed apps found')
             else:
-                selected_package = map_ready_apps[0].get('package')
-                app_resolution['mode'] = 'fallback_no_llm'
-                app_resolution['selected_package'] = selected_package
-                app_resolution['reason'] = 'llm planner disabled'
+                fallback_list = map_ready_apps or installed_apps
+                if fallback_list:
+                    selected_package = fallback_list[0].get('package')
+                    app_resolution['mode'] = 'fallback_no_llm'
+                    app_resolution['selected_package'] = selected_package
+                    app_resolution['reason'] = 'llm planner disabled'
+                else:
+                    raise RuntimeError('no installed apps found')
         else:
             app_candidates_for_fsm = [{'package': selected_package, 'name': _infer_app_name_from_package(selected_package)}]
 
         map_path = _pick_latest_map_file(base_dir, selected_package or None)
-        if not map_path:
-            raise RuntimeError(f'no map file found for package: {selected_package}')
+        # map_path may be None; engine handles no-map by going straight to VISION_ACT
     else:
         map_path = os.path.abspath(map_path)
         if not map_path.startswith(base_dir):
@@ -2961,9 +2965,10 @@ def _run_cortex_fsm_logic(data: dict, log_callback, run_client):
         user_task=user_task,
         map_path=map_path,
         start_page=(data.get('start_page') or None),
+        package_name=selected_package or None,
         extra_context={
             'app_candidates': (installed_apps or app_candidates_for_fsm),
-            'page_candidates': _build_page_candidates_from_map(map_path),
+            'page_candidates': _build_page_candidates_from_map(map_path) if map_path else [],
         },
     )
     ok = result.get('status') == 'success'

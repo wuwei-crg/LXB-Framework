@@ -133,7 +133,7 @@ class CortexContext:
     """
     task_id: str
     user_task: str
-    map_path: str
+    map_path: Optional[str] = None
     start_page: Optional[str] = None
     selected_package: str = ""
     target_page: str = ""
@@ -587,9 +587,10 @@ class CortexFSMEngine:
     def run(
         self,
         user_task: str,
-        map_path: str,
+        map_path: Optional[str] = None,
         start_page: Optional[str] = None,
         extra_context: Optional[Dict[str, Any]] = None,
+        package_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute an automation task using the FSM engine.
 
@@ -598,10 +599,11 @@ class CortexFSMEngine:
 
         Args:
             user_task: Natural language description of the task to perform
-            map_path: Path to the navigation map JSON file
+            map_path: Path to the navigation map JSON file (None = vision-only mode)
             start_page: Optional starting page ID. If None, auto-detects from
                 current device state
             extra_context: Optional additional context fields to add to CortexContext
+            package_name: Optional package to pre-select, bypassing APP_RESOLVE LLM call
 
         Returns:
             Dict containing execution results:
@@ -629,6 +631,8 @@ class CortexFSMEngine:
             ...     print(f"Task failed: {result.get('reason')}")
         """
         context = CortexContext(task_id=str(uuid.uuid4()), user_task=user_task, map_path=map_path, start_page=start_page)
+        if package_name:
+            context.selected_package = package_name
         for k, v in (extra_context or {}).items():
             if hasattr(context, k):
                 setattr(context, k, v)
@@ -689,6 +693,11 @@ class CortexFSMEngine:
         Returns:
             Next FSM state to transition to
         """
+        # No-map shortcut: skip ROUTE_PLAN LLM call when no map is available
+        if state == CortexState.ROUTE_PLAN and not context.map_path:
+            self._log(context, "fsm", "route_plan_skipped", reason="no_map", package=context.selected_package)
+            return CortexState.ROUTING
+
         allowed = self._ALLOWED_OPS.get(state, set())
         prompt = self._prompt_builder.build(state, context, allowed)
         self._log(context, "llm", "prompt", state=state.value, prompt=prompt)
@@ -830,7 +839,12 @@ class CortexFSMEngine:
             action_engine=None,
             log_callback=lambda payload: self._log(context, "route", "route_event", payload=payload),
         )
-        result = route_engine.run(user_task=context.user_task, map_path=context.map_path, start_page=context.start_page)
+        result = route_engine.run(
+            user_task=context.user_task,
+            map_path=context.map_path,
+            start_page=context.start_page,
+            package_name=context.selected_package or None,
+        )
         context.route_result = result
         if result.get("status") != "success":
             context.error = result.get("reason", "route_failed")
