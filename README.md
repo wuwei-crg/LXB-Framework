@@ -19,6 +19,19 @@
 
 ---
 
+> **A note before you dive in**
+>
+> This is an exploratory side project built by an undergraduate student — very much a Work in Progress.
+> The code is rough, many corner cases are not handled, and I make no promises about active maintenance.
+> I stumbled onto the idea of combining VLMs with XML accessibility trees and found it genuinely
+> interesting, so I documented it here hoping it might be useful or spark ideas for others.
+>
+> If you are a researcher or engineer working in this space and spot something wrong or improvable,
+> feedback and PRs are warmly welcome. Please be gentle though — this is a learning project
+> and the author is still figuring things out.
+
+---
+
 ## Overview
 
 LXB-Framework is an engineering system for Android automation with two core goals:
