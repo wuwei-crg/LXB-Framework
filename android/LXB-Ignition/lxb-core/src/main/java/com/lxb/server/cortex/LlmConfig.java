@@ -33,7 +33,11 @@ public class LlmConfig {
     }
 
     public static LlmConfig loadDefault() throws Exception {
-        return loadFromFile(DEFAULT_CONFIG_PATH);
+        String override = System.getProperty("lxb.llm.config.path");
+        String path = (override != null && !override.trim().isEmpty())
+                ? override.trim()
+                : DEFAULT_CONFIG_PATH;
+        return loadFromFile(path);
     }
 
     public static LlmConfig loadFromFile(String path) throws Exception {
@@ -82,4 +86,3 @@ public class LlmConfig {
         }
     }
 }
-

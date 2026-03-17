@@ -58,4 +58,5 @@ public final class CommandIds {
     public static final byte CMD_CORTEX_SCHEDULE_ADD = 0x7A;    // add periodic scheduled FSM task
     public static final byte CMD_CORTEX_SCHEDULE_LIST = 0x7B;   // list schedules
     public static final byte CMD_CORTEX_SCHEDULE_REMOVE = 0x7C; // remove schedule by id
+    public static final byte CMD_CORTEX_SCHEDULE_UPDATE = 0x7D; // update schedule by id
 }

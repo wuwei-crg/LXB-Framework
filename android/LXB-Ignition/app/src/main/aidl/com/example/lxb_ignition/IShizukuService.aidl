@@ -14,6 +14,7 @@ interface IShizukuService {
      * @return "OK" 开头表示成功，"ERROR" 开头表示失败（含原因）
      */
     String startServer(String jarPath, String serverClass, int port);
+    String startServerWithJvmOpts(String jarPath, String serverClass, int port, String jvmOpts);
 
     void stopServer(String serverClass);
 

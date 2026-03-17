@@ -165,6 +165,7 @@ CMD_CORTEX_TASK_LIST = 0x79        # List recent Cortex FSM tasks
 CMD_CORTEX_SCHEDULE_ADD = 0x7A     # Add periodic scheduled Cortex FSM task
 CMD_CORTEX_SCHEDULE_LIST = 0x7B    # List schedules
 CMD_CORTEX_SCHEDULE_REMOVE = 0x7C  # Remove schedule by id
+CMD_CORTEX_SCHEDULE_UPDATE = 0x7D  # Update schedule by id
 
 # =============================================================================
 
@@ -214,6 +215,7 @@ IMPLEMENTED_COMMANDS_V1 = {
     CMD_CORTEX_SCHEDULE_ADD,
     CMD_CORTEX_SCHEDULE_LIST,
     CMD_CORTEX_SCHEDULE_REMOVE,
+    CMD_CORTEX_SCHEDULE_UPDATE,
 }
 
 # =============================================================================

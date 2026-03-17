@@ -638,6 +638,91 @@ public class CortexFacade {
     }
 
     /**
+     * Update schedule by id.
+     *
+     * Payload JSON:
+     * {
+     *   "schedule_id": "...",            // required
+     *   "name": "optional",
+     *   "user_task": "...",              // required
+     *   "package": "optional",
+     *   "map_path": "optional",
+     *   "start_page": "optional",
+     *   "trace_mode": "push|",
+     *   "trace_udp_port": 23456,
+     *   "run_at": 1711111111111,         // required epoch ms
+     *   "repeat_mode": "once|daily|weekly",
+     *   "repeat_weekdays": 31,           // Mon bit0 ... Sun bit6
+     *   "user_playbook": "optional"
+     * }
+     */
+    public byte[] handleCortexScheduleUpdate(byte[] payload) {
+        try {
+            String s = payload != null ? new String(payload, StandardCharsets.UTF_8) : "{}";
+            Map<String, Object> req = Json.parseObject(s);
+
+            String scheduleId = stringOrEmpty(req.get("schedule_id"));
+            if (scheduleId.isEmpty()) {
+                return err("schedule_id is required");
+            }
+            String name = stringOrEmpty(req.get("name"));
+            String userTask = stringOrEmpty(req.get("user_task"));
+            String pkg = stringOrEmpty(req.get("package"));
+            String mapPath = stringOrEmpty(req.get("map_path"));
+            String startPage = stringOrEmpty(req.get("start_page"));
+            String traceMode = stringOrEmpty(req.get("trace_mode"));
+            int traceUdpPort = toInt(req.get("trace_udp_port"), 0);
+            long runAt = toLong(req.get("run_at"), 0L);
+            if (runAt <= 0L) {
+                runAt = toLong(req.get("start_at"), 0L);
+            }
+            String repeatMode = stringOrEmpty(req.get("repeat_mode"));
+            int repeatWeekdays = toInt(req.get("repeat_weekdays"), 0);
+            if (repeatMode.isEmpty()) {
+                boolean repeatDaily = false;
+                Object repeatObj = req.get("repeat_daily");
+                if (repeatObj instanceof Boolean) {
+                    repeatDaily = ((Boolean) repeatObj).booleanValue();
+                } else if (repeatObj != null) {
+                    repeatDaily = "true".equalsIgnoreCase(String.valueOf(repeatObj));
+                }
+                repeatMode = repeatDaily ? "daily" : "once";
+            }
+            String userPlaybook = stringOrEmpty(req.get("user_playbook"));
+
+            Map<String, Object> schedule = taskManager.updateScheduledTask(
+                    scheduleId,
+                    name,
+                    userTask,
+                    pkg,
+                    mapPath.isEmpty() ? null : mapPath,
+                    startPage.isEmpty() ? null : startPage,
+                    traceMode.isEmpty() ? null : traceMode,
+                    traceUdpPort > 0 ? traceUdpPort : null,
+                    runAt,
+                    repeatMode,
+                    repeatWeekdays,
+                    userPlaybook
+            );
+            if (schedule == null) {
+                return err("schedule not found: " + scheduleId);
+            }
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("ok", true);
+            out.put("updated", true);
+            out.put("schedule", schedule);
+            trace.event("cortex_schedule_update", schedule);
+            return ok(Json.stringify(out));
+        } catch (Exception e) {
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("err", String.valueOf(e));
+            trace.event("cortex_schedule_update_err", ev);
+            return err(String.valueOf(e));
+        }
+    }
+
+    /**
      * Route-only 闁圭瑳鍡╂斀闁挎稒鑹鹃悢鈧ù?map transitions闁挎稑濂旂划?home闁挎稑鐗婇崹銊╁及閹呯 start_page闁挎稑顦抽惌楣冩偨閸楃偛鐓?target_page闁?     *
      * payload: JSON UTF-8:
      * {
@@ -952,6 +1037,8 @@ public class CortexFacade {
      */
     private boolean launchAppForRoute(String packageName) {
         try {
+            // Best-effort stop before launch to avoid start failure on some devices.
+            stopAppBestEffortForRoute(packageName);
             byte[] pkgBytes = packageName.getBytes(StandardCharsets.UTF_8);
             ByteBuffer buf = ByteBuffer.allocate(1 + 2 + pkgBytes.length).order(ByteOrder.BIG_ENDIAN);
             int flags = 0x01; // CLEAR_TASK
@@ -966,6 +1053,30 @@ public class CortexFacade {
             ev.put("package", packageName);
             trace.event("route_launch_err", ev);
             return false;
+        }
+    }
+
+    private void stopAppBestEffortForRoute(String packageName) {
+        try {
+            byte[] pkgBytes = packageName.getBytes(StandardCharsets.UTF_8);
+            ByteBuffer buf = ByteBuffer.allocate(2 + pkgBytes.length).order(ByteOrder.BIG_ENDIAN);
+            buf.putShort((short) pkgBytes.length);
+            buf.put(pkgBytes);
+            byte[] resp = executionEngine.handleStopApp(buf.array());
+            boolean ok = resp != null && resp.length > 0 && resp[0] == 0x01;
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("package", packageName);
+            ev.put("result", ok ? "ok" : "fail");
+            trace.event("route_stop_app", ev);
+            try {
+                Thread.sleep(150);
+            } catch (InterruptedException ignored) {
+            }
+        } catch (Exception e) {
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("package", packageName);
+            ev.put("err", String.valueOf(e));
+            trace.event("route_stop_err", ev);
         }
     }
 }

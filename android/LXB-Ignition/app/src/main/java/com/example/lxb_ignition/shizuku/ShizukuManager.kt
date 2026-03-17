@@ -8,6 +8,7 @@ import android.os.IBinder
 import android.util.Log
 import com.example.lxb_ignition.BuildConfig
 import com.example.lxb_ignition.IShizukuService
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,6 +40,7 @@ class ShizukuManager(private val context: Context) {
         private const val SERVER_CLASS = "com.lxb.server.Main"
         private const val PERMISSION_REQUEST_CODE = 1001
         private const val LOG_POLL_INTERVAL_MS = 2000L
+        private const val LXB_STATE_DIR_NAME = "lxb_state"
     }
 
     enum class State {
@@ -226,6 +228,54 @@ class ShizukuManager(private val context: Context) {
         }
     }
 
+    fun getLxbStateBaseDir(): String {
+        val externalBase = context.getExternalFilesDir(null)?.absolutePath
+        val base = if (!externalBase.isNullOrBlank()) {
+            File(externalBase, LXB_STATE_DIR_NAME)
+        } else {
+            File("/data/local/tmp/lxb/$LXB_STATE_DIR_NAME")
+        }
+        if (!base.exists()) {
+            runCatching { base.mkdirs() }
+        }
+        return base.absolutePath
+    }
+
+    fun getMapDirPath(): String {
+        val dir = File(getLxbStateBaseDir(), "maps")
+        if (!dir.exists()) {
+            runCatching { dir.mkdirs() }
+        }
+        return dir.absolutePath
+    }
+
+    fun getLlmConfigPath(): String {
+        val base = File(getLxbStateBaseDir())
+        if (!base.exists()) {
+            runCatching { base.mkdirs() }
+        }
+        return File(base, "lxb-llm-config.json").absolutePath
+    }
+
+    fun getTaskMemoryPath(): String {
+        val base = File(getLxbStateBaseDir())
+        if (!base.exists()) {
+            runCatching { base.mkdirs() }
+        }
+        return File(base, "task_memory.json").absolutePath
+    }
+
+    private fun buildServerJvmOpts(): String {
+        val mapDir = getMapDirPath()
+        val llmCfg = getLlmConfigPath()
+        val taskMem = getTaskMemoryPath()
+        return listOf(
+            "-Dlxb.map.dir=$mapDir",
+            "-Dlxb.llm.config.path=$llmCfg",
+            "-Dlxb.task.memory.path=$taskMem"
+        ).joinToString(" ")
+    }
+
     // ----- lxb-core server management -----
 
     suspend fun startServer(port: Int): Result<Unit> = withContext(Dispatchers.IO) {
@@ -247,7 +297,9 @@ class ShizukuManager(private val context: Context) {
             log("JAR written to $TMP_JAR")
 
             setState(State.STARTING, "Starting lxb-core (UDP :$port)...")
-            val result = svc.startServer(TMP_JAR, SERVER_CLASS, port)
+            val jvmOpts = buildServerJvmOpts()
+            log("Server storage base: ${getLxbStateBaseDir()}")
+            val result = svc.startServerWithJvmOpts(TMP_JAR, SERVER_CLASS, port, jvmOpts)
 
             if (result.startsWith("OK")) {
                 logBytesRead = 0L
@@ -328,4 +380,3 @@ class ShizukuManager(private val context: Context) {
         }
     }
 }
-

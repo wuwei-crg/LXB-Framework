@@ -37,9 +37,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_LLM_API_KEY = "llm_api_key"
         private const val KEY_LLM_MODEL = "llm_model"
 
-        // Keep in sync with LlmConfig.DEFAULT_CONFIG_PATH in lxb-core
-        private const val LLM_CONFIG_PATH = "/data/local/tmp/lxb-llm-config.json"
-
         // Local UDP port for trace push from lxb-core.
         private const val TRACE_UDP_PORT = 23456
 
@@ -118,6 +115,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val name: String,
         val userTask: String,
         val packageName: String,
+        val startPage: String,
         val runAtMs: Long,
         val repeatMode: String,
         val repeatWeekdays: Int,
@@ -436,6 +434,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             name = s.optString("name", ""),
                             userTask = s.optString("user_task", ""),
                             packageName = s.optString("package", ""),
+                            startPage = s.optString("start_page", ""),
                             runAtMs = s.optLong("run_at", 0L),
                             repeatMode = s.optString(
                                 "repeat_mode",
@@ -538,6 +537,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateScheduleOnDevice(scheduleId: String) {
+        val sid = scheduleId.trim()
+        if (sid.isEmpty()) {
+            appendSystemMessage("schedule_id is empty.")
+            return
+        }
+        val port = lxbPort.value.toIntOrNull() ?: run {
+            appendSystemMessage("Invalid lxb-core port, cannot update schedule.")
+            return
+        }
+        val task = scheduleTask.value.trim()
+        if (task.isEmpty()) {
+            appendSystemMessage("Schedule task cannot be empty.")
+            return
+        }
+        val runAt = scheduleStartAtMs.value.trim().toLongOrNull()
+        if (runAt == null || runAt <= 0L) {
+            appendSystemMessage("Please pick a valid date and time.")
+            return
+        }
+        val repeatMode = scheduleRepeatMode.value.trim().lowercase()
+        val repeatWeekdays = scheduleRepeatWeekdays.value
+        if (repeatMode == REPEAT_ONCE && runAt <= System.currentTimeMillis()) {
+            appendSystemMessage("run_at must be in the future.")
+            return
+        }
+        if (repeatMode == REPEAT_WEEKLY && (repeatWeekdays and 0x7F) == 0) {
+            appendSystemMessage("Please select at least one weekday for weekly repeat.")
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                LocalLinkClient("127.0.0.1", port).use { client ->
+                    runCatching { client.handshake() }
+                    val payloadJson = org.json.JSONObject()
+                        .put("schedule_id", sid)
+                        .put("name", scheduleName.value.trim())
+                        .put("user_task", task)
+                        .put("package", schedulePackage.value.trim())
+                        .put("start_page", scheduleStartPage.value.trim())
+                        .put("trace_mode", "push")
+                        .put("trace_udp_port", TRACE_UDP_PORT)
+                        .put("run_at", runAt)
+                        .put("repeat_mode", repeatMode)
+                        .put("repeat_weekdays", repeatWeekdays and 0x7F)
+                        .put("repeat_daily", repeatMode == REPEAT_DAILY) // backward compatibility
+                        .put("user_playbook", schedulePlaybook.value.trim())
+                        .toString()
+                    val resp = client.sendCommand(
+                        CommandIds.CMD_CORTEX_SCHEDULE_UPDATE,
+                        payloadJson.toByteArray(Charsets.UTF_8),
+                        timeoutMs = 6_000
+                    )
+                    val text = resp.toString(Charsets.UTF_8)
+                    val obj = runCatching { org.json.JSONObject(text) }.getOrNull()
+                    if (obj == null || !obj.optBoolean("ok", false)) {
+                        "Update schedule failed: ${text.take(220)}"
+                    } else {
+                        "Schedule updated: $sid"
+                    }
+                }
+            }.getOrElse { e -> "Update schedule failed: ${e.message}" }
+
+            withContext(Dispatchers.Main) {
+                appendLog("[SCHEDULE] $result")
+                appendSystemMessage(result)
+                if (result.startsWith("Schedule updated")) {
+                    refreshScheduleListOnDevice()
+                }
+            }
+        }
+    }
+
     fun removeScheduleOnDevice(scheduleId: String) {
         val port = lxbPort.value.toIntOrNull() ?: run {
             appendSystemMessage("Invalid lxb-core port, cannot remove schedule.")
@@ -577,6 +650,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 refreshScheduleListOnDevice()
             }
         }
+    }
+
+    fun loadScheduleForm(schedule: ScheduleSummary) {
+        scheduleName.value = schedule.name
+        scheduleTask.value = schedule.userTask
+        scheduleStartAtMs.value = schedule.runAtMs.toString()
+        scheduleRepeatMode.value = schedule.repeatMode.ifBlank { REPEAT_ONCE }
+        scheduleRepeatWeekdays.value = schedule.repeatWeekdays
+        schedulePackage.value = schedule.packageName
+        scheduleStartPage.value = schedule.startPage
+        schedulePlaybook.value = schedule.userPlaybook
+    }
+
+    fun resetScheduleForm() {
+        scheduleName.value = ""
+        scheduleTask.value = ""
+        scheduleStartAtMs.value = (System.currentTimeMillis() + 5 * 60_000L).toString()
+        scheduleRepeatMode.value = REPEAT_ONCE
+        scheduleRepeatWeekdays.value = 0b0011111
+        schedulePackage.value = ""
+        scheduleStartPage.value = ""
+        schedulePlaybook.value = ""
     }
 
     fun showTaskSummaryInChat(task: TaskSummary) {
@@ -943,9 +1038,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .put("model", model)
                 .toString()
             val cfgBytes = cfgJson.toByteArray(Charset.forName("UTF-8"))
+            val llmConfigPath = shizukuManager.getLlmConfigPath()
 
             val syncResult = withContext(Dispatchers.IO) {
-                shizukuManager.writeConfigFile(LLM_CONFIG_PATH, cfgBytes)
+                shizukuManager.writeConfigFile(llmConfigPath, cfgBytes)
             }
             if (syncResult.isFailure) {
                 val msg = "Failed to write device config: ${syncResult.exceptionOrNull()?.message}"
@@ -953,6 +1049,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 appendLog("[LLM] $msg")
                 return@launch
             }
+            appendLog("[LLM] Config synced to $llmConfigPath")
 
             // 2) Directly call cloud LLM from APK to validate the config
             val result = withContext(Dispatchers.IO) {

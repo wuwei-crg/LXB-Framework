@@ -1737,6 +1737,8 @@ public class CortexFsmEngine {
      */
     private boolean launchAppForRouting(String packageName) {
         try {
+            // Best-effort stop before launch to avoid start failure when app is in a bad background state.
+            stopAppBestEffortForRouting(packageName);
             byte[] pkgBytes = packageName.getBytes(StandardCharsets.UTF_8);
             ByteBuffer buf = ByteBuffer.allocate(1 + 2 + pkgBytes.length).order(ByteOrder.BIG_ENDIAN);
             int flags = 0x01; // CLEAR_TASK
@@ -1758,6 +1760,30 @@ public class CortexFsmEngine {
             ev.put("err", String.valueOf(e));
             trace.event("fsm_routing_launch_err", ev);
             return false;
+        }
+    }
+
+    private void stopAppBestEffortForRouting(String packageName) {
+        try {
+            byte[] pkgBytes = packageName.getBytes(StandardCharsets.UTF_8);
+            ByteBuffer buf = ByteBuffer.allocate(2 + pkgBytes.length).order(ByteOrder.BIG_ENDIAN);
+            buf.putShort((short) pkgBytes.length);
+            buf.put(pkgBytes);
+            byte[] resp = execution != null ? execution.handleStopApp(buf.array()) : null;
+            boolean ok = resp != null && resp.length > 0 && resp[0] == 0x01;
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("package", packageName);
+            ev.put("result", ok ? "ok" : "fail");
+            trace.event("fsm_routing_stop_app", ev);
+            try {
+                Thread.sleep(150);
+            } catch (InterruptedException ignored) {
+            }
+        } catch (Exception e) {
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("package", packageName);
+            ev.put("err", String.valueOf(e));
+            trace.event("fsm_routing_stop_err", ev);
         }
     }
 

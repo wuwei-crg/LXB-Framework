@@ -204,6 +204,9 @@ public class CommandDispatcher {
                 case CommandIds.CMD_CORTEX_SCHEDULE_REMOVE:
                     response = cortexFacade.handleCortexScheduleRemove(payload);
                     break;
+                case CommandIds.CMD_CORTEX_SCHEDULE_UPDATE:
+                    response = cortexFacade.handleCortexScheduleUpdate(payload);
+                    break;
 
                 default:
                     System.out.println(TAG + " Unimplemented command: 0x" +

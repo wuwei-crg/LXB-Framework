@@ -2,6 +2,7 @@
 
 import android.app.DatePickerDialog
 import android.os.Bundle
+import android.widget.EditText
 import android.widget.NumberPicker
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -211,6 +212,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val scheduleStartPage by viewModel.scheduleStartPage.collectAsState()
     val schedulePlaybook by viewModel.schedulePlaybook.collectAsState()
     var page by rememberSaveable { mutableIntStateOf(0) }
+    var editingScheduleId by rememberSaveable { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         viewModel.refreshScheduleListOnDevice()
@@ -310,7 +312,11 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                             .padding(top = 6.dp)
                     )
                     OutlinedButton(
-                        onClick = { page = 3 },
+                        onClick = {
+                            editingScheduleId = ""
+                            viewModel.resetScheduleForm()
+                            page = 3
+                        },
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                         modifier = Modifier.height(32.dp)
                     ) {
@@ -353,6 +359,11 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                             items(schedules, key = { it.scheduleId }) { schedule ->
                                 ScheduleRow(
                                     schedule = schedule,
+                                    onEdit = {
+                                        editingScheduleId = schedule.scheduleId
+                                        viewModel.loadScheduleForm(schedule)
+                                        page = 3
+                                    },
                                     onDelete = { viewModel.removeScheduleOnDevice(schedule.scheduleId) }
                                 )
                             }
@@ -436,6 +447,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             val selectedRunAt = scheduleStartAtMs.toLongOrNull()?.takeIf { it > 0L }
                 ?: (System.currentTimeMillis() + 5 * 60_000L)
             var showTimeWheel by rememberSaveable { mutableStateOf(false) }
+            val isEditing = editingScheduleId.isNotEmpty()
             Column(
                 modifier = modifier
                     .fillMaxSize()
@@ -448,14 +460,17 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OutlinedButton(
-                        onClick = { page = 1 },
+                        onClick = {
+                            page = 1
+                            editingScheduleId = ""
+                        },
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                         modifier = Modifier.height(32.dp)
                     ) {
                         Text("Back", fontSize = 12.sp)
                     }
                     Text(
-                        text = "Create Schedule",
+                        text = if (isEditing) "Edit Schedule" else "Create Schedule",
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier
                             .weight(1f)
@@ -619,15 +634,23 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         ) {
                             Button(
                                 onClick = {
-                                    viewModel.addScheduleOnDevice()
+                                    if (isEditing) {
+                                        viewModel.updateScheduleOnDevice(editingScheduleId)
+                                    } else {
+                                        viewModel.addScheduleOnDevice()
+                                    }
                                     page = 1
+                                    editingScheduleId = ""
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("Submit")
+                                Text(if (isEditing) "Save" else "Submit")
                             }
                             OutlinedButton(
-                                onClick = { page = 1 },
+                                onClick = {
+                                    page = 1
+                                    editingScheduleId = ""
+                                },
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Text("Cancel")
@@ -662,12 +685,14 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 @Composable
 fun ScheduleRow(
     schedule: MainViewModel.ScheduleSummary,
+    onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = scheme.surfaceVariant)
+        colors = CardDefaults.cardColors(containerColor = scheme.surfaceVariant),
+        onClick = onEdit
     ) {
         Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
@@ -793,9 +818,11 @@ private fun WheelTimePickerDialog(
                                 wrapSelectorWheel = true
                                 descendantFocusability = NumberPicker.FOCUS_BLOCK_DESCENDANTS
                                 setFormatter { String.format(Locale.getDefault(), "%02d", it) }
+                                styleWheelNumberPicker(this)
                             }
                         },
                         update = { picker ->
+                            styleWheelNumberPicker(picker)
                             if (picker.value != hour) {
                                 picker.value = hour
                             }
@@ -821,9 +848,11 @@ private fun WheelTimePickerDialog(
                                 wrapSelectorWheel = true
                                 descendantFocusability = NumberPicker.FOCUS_BLOCK_DESCENDANTS
                                 setFormatter { String.format(Locale.getDefault(), "%02d", it) }
+                                styleWheelNumberPicker(this)
                             }
                         },
                         update = { picker ->
+                            styleWheelNumberPicker(picker)
                             if (picker.value != minute) {
                                 picker.value = minute
                             }
@@ -849,6 +878,19 @@ private fun WheelTimePickerDialog(
             }
         }
     )
+}
+
+private fun styleWheelNumberPicker(picker: NumberPicker) {
+    runCatching {
+        picker.setBackgroundColor(android.graphics.Color.WHITE)
+        for (i in 0 until picker.childCount) {
+            val child = picker.getChildAt(i)
+            if (child is EditText) {
+                child.setTextColor(android.graphics.Color.BLACK)
+                child.textSize = 20f
+            }
+        }
+    }
 }
 
 @Composable

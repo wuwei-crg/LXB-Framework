@@ -1,4 +1,4 @@
-package com.example.lxb_ignition.shizuku
+﻿package com.example.lxb_ignition.shizuku
 
 import com.example.lxb_ignition.IShizukuService
 import java.io.File
@@ -6,8 +6,8 @@ import java.io.FileOutputStream
 import java.io.RandomAccessFile
 
 /**
- * 运行于 Shizuku shell 进程中的服务实现。
- * 此类无法使用 Android Context，只能用纯 JVM 标准库和 shell 命令。
+ * Runs inside Shizuku user service process (shell uid).
+ * No Android Context is available here.
  */
 class ShizukuServiceImpl : IShizukuService.Stub() {
 
@@ -25,14 +25,24 @@ class ShizukuServiceImpl : IShizukuService.Stub() {
     }
 
     override fun startServer(jarPath: String, serverClass: String, port: Int): String {
-        return try {
-            // 先终止已有实例，避免端口占用（EADDRINUSE）
-            Runtime.getRuntime().exec(arrayOf("sh", "-c", "pkill -f $serverClass")).waitFor()
-            Thread.sleep(800) // 等待端口释放
+        return startServerWithJvmOpts(jarPath, serverClass, port, "")
+    }
 
-            // nohup 后台启动，输出写入日志文件，与 shell 进程完全解耦
+    override fun startServerWithJvmOpts(
+        jarPath: String,
+        serverClass: String,
+        port: Int,
+        jvmOpts: String
+    ): String {
+        return try {
+            // Stop old process first to avoid EADDRINUSE.
+            Runtime.getRuntime().exec(arrayOf("sh", "-c", "pkill -f $serverClass")).waitFor()
+            Thread.sleep(800)
+
+            val extraJvmOpts = jvmOpts.trim().let { if (it.isEmpty()) "" else "$it " }
             val cmd = "nohup app_process " +
                     "-Djava.class.path=$jarPath " +
+                    extraJvmOpts +
                     "/system/bin $serverClass $port " +
                     "> $LOG_FILE 2>&1 &"
             val sh = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
@@ -41,10 +51,10 @@ class ShizukuServiceImpl : IShizukuService.Stub() {
             Thread.sleep(2500)
 
             if (checkRunning(serverClass)) {
-                "OK\n服务已启动，日志见 $LOG_FILE"
+                "OK\nServer started, log: $LOG_FILE"
             } else {
                 val log = readTail(LOG_FILE, 1024)
-                "ERROR\n进程未找到，日志:\n$log"
+                "ERROR\nProcess not found, log:\n$log"
             }
         } catch (e: Exception) {
             "ERROR\n${e.message}"
@@ -77,7 +87,6 @@ class ShizukuServiceImpl : IShizukuService.Stub() {
 
     private fun checkRunning(serverClass: String): Boolean {
         return try {
-            // pgrep -f 匹配完整命令行，ps -A 只显示截断的进程名（15字符），无法可靠匹配
             val proc = Runtime.getRuntime().exec(arrayOf("pgrep", "-f", serverClass))
             val output = proc.inputStream.bufferedReader().readText().trim()
             proc.waitFor()
@@ -88,7 +97,7 @@ class ShizukuServiceImpl : IShizukuService.Stub() {
     private fun readTail(path: String, maxBytes: Int): String {
         return try {
             val file = File(path)
-            if (!file.exists()) return "(日志文件不存在)"
+            if (!file.exists()) return "(log file not found)"
             val len = file.length()
             val from = maxOf(0L, len - maxBytes)
             RandomAccessFile(file, "r").use { raf ->
@@ -97,6 +106,6 @@ class ShizukuServiceImpl : IShizukuService.Stub() {
                 raf.readFully(buf)
                 String(buf, Charsets.UTF_8)
             }
-        } catch (_: Exception) { "(读取日志失败)" }
+        } catch (_: Exception) { "(failed to read log)" }
     }
 }

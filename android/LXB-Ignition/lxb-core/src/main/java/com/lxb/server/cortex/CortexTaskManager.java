@@ -57,7 +57,12 @@ public class CortexTaskManager {
     private final ConcurrentHashMap<String, Map<String, Object>> memoryByScheduleId =
             new ConcurrentHashMap<String, Map<String, Object>>();
     private final Object memoryLock = new Object();
-    private static final String TASK_MEMORY_PATH = "/data/local/tmp/lxb/task_memory.json";
+    private static final String DEFAULT_TASK_MEMORY_PATH = "/data/local/tmp/lxb/task_memory.json";
+    private final String taskMemoryPath;
+    private static final String DEFAULT_SCHEDULES_PATH = "/data/local/tmp/lxb/schedules.v1.json";
+    private static final String DEFAULT_TASK_RUNS_PATH = "/data/local/tmp/lxb/task_runs.v1.json";
+    private final String schedulesPath;
+    private final String taskRunsPath;
 
     // Dedicated worker/scheduler threads.
     private final Thread workerThread;
@@ -69,7 +74,12 @@ public class CortexTaskManager {
 
     public CortexTaskManager(CortexFsmEngine fsmEngine) {
         this.fsmEngine = fsmEngine;
+        this.taskMemoryPath = resolveTaskMemoryPath();
+        this.schedulesPath = resolveSchedulesPath(this.taskMemoryPath);
+        this.taskRunsPath = resolveTaskRunsPath(this.taskMemoryPath);
         loadTaskMemoryFromDisk();
+        loadSchedulesFromDisk();
+        loadTaskRunsFromDisk();
         this.workerThread = new Thread(this::workerLoop, "CortexFsmWorker");
         this.workerThread.setDaemon(true);
         this.workerThread.start();
@@ -204,33 +214,11 @@ public class CortexTaskManager {
         }
         String repeatMode = normalizeRepeatMode(repeatModeRaw);
         long now = System.currentTimeMillis();
-        long firstRunAt;
-        Calendar c = Calendar.getInstance();
-        c.setTimeInMillis(runAtMs);
-        int h = c.get(Calendar.HOUR_OF_DAY);
-        int m = c.get(Calendar.MINUTE);
-        if ("daily".equals(repeatMode)) {
-            if (runAtMs > now) {
-                firstRunAt = runAtMs;
-            } else {
-                firstRunAt = computeNextDailyRun(h, m, now);
-            }
-        } else if ("weekly".equals(repeatMode)) {
-            if ((repeatWeekdays & 0x7F) == 0) {
-                throw new IllegalArgumentException("repeat_weekdays is required for weekly schedule");
-            }
-            int normalizedMask = (repeatWeekdays & 0x7F);
-            if (runAtMs > now && isWeekdaySelected(runAtMs, normalizedMask)) {
-                firstRunAt = runAtMs;
-            } else {
-                firstRunAt = computeNextWeeklyRun(h, m, normalizedMask, now);
-            }
-        } else {
-            firstRunAt = runAtMs;
-            if (firstRunAt <= now) {
-                throw new IllegalArgumentException("run_at must be in the future for one-shot schedule");
-            }
+        int normalizedMask = (repeatWeekdays & 0x7F);
+        if ("weekly".equals(repeatMode) && normalizedMask == 0) {
+            throw new IllegalArgumentException("repeat_weekdays is required for weekly schedule");
         }
+        long firstRunAt = computeFirstRunAt(runAtMs, repeatMode, normalizedMask, now);
 
         ScheduledTaskDef def = new ScheduledTaskDef();
         def.scheduleId = UUID.randomUUID().toString();
@@ -244,9 +232,11 @@ public class CortexTaskManager {
         def.userPlaybook = userPlaybook != null ? userPlaybook.trim() : "";
         def.runAtMs = runAtMs;
         def.repeatMode = repeatMode;
-        def.repeatWeekdays = (repeatWeekdays & 0x7F);
-        def.hourOfDay = h;
-        def.minuteOfHour = m;
+        def.repeatWeekdays = normalizedMask;
+        Calendar c = Calendar.getInstance();
+        c.setTimeInMillis(runAtMs);
+        def.hourOfDay = c.get(Calendar.HOUR_OF_DAY);
+        def.minuteOfHour = c.get(Calendar.MINUTE);
         def.nextRunAt = firstRunAt;
         def.enabled = true;
         def.createdAt = now;
@@ -261,7 +251,73 @@ public class CortexTaskManager {
                 }
             }
         }
+        saveSchedulesToDisk();
 
+        return snapshotSchedule(def);
+    }
+
+    /**
+     * Update an existing schedule in place (schedule_id remains unchanged).
+     */
+    public Map<String, Object> updateScheduledTask(
+            String scheduleId,
+            String name,
+            String userTask,
+            String packageName,
+            String mapPath,
+            String startPage,
+            String traceMode,
+            Integer traceUdpPort,
+            long runAtMs,
+            String repeatModeRaw,
+            int repeatWeekdays,
+            String userPlaybook
+    ) {
+        if (scheduleId == null || scheduleId.trim().isEmpty()) {
+            throw new IllegalArgumentException("schedule_id is required");
+        }
+        if (userTask == null || userTask.trim().isEmpty()) {
+            throw new IllegalArgumentException("user_task is required");
+        }
+        if (runAtMs <= 0) {
+            throw new IllegalArgumentException("run_at is required and must be > 0");
+        }
+
+        ScheduledTaskDef def = scheduleRegistry.get(scheduleId);
+        if (def == null) {
+            return null;
+        }
+
+        String repeatMode = normalizeRepeatMode(repeatModeRaw);
+        int normalizedMask = (repeatWeekdays & 0x7F);
+        if ("weekly".equals(repeatMode) && normalizedMask == 0) {
+            throw new IllegalArgumentException("repeat_weekdays is required for weekly schedule");
+        }
+
+        synchronized (def) {
+            long now = System.currentTimeMillis();
+            long firstRunAt = computeFirstRunAt(runAtMs, repeatMode, normalizedMask, now);
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(runAtMs);
+
+            def.name = name != null ? name.trim() : "";
+            def.userTask = userTask.trim();
+            def.packageName = packageName != null ? packageName.trim() : "";
+            def.mapPath = mapPath;
+            def.startPage = startPage;
+            def.traceMode = traceMode;
+            def.traceUdpPort = traceUdpPort;
+            def.userPlaybook = userPlaybook != null ? userPlaybook.trim() : "";
+
+            def.runAtMs = runAtMs;
+            def.repeatMode = repeatMode;
+            def.repeatWeekdays = normalizedMask;
+            def.hourOfDay = c.get(Calendar.HOUR_OF_DAY);
+            def.minuteOfHour = c.get(Calendar.MINUTE);
+            def.nextRunAt = firstRunAt;
+            def.enabled = true;
+        }
+        saveSchedulesToDisk();
         return snapshotSchedule(def);
     }
 
@@ -280,6 +336,7 @@ public class CortexTaskManager {
             memoryByScheduleId.remove(scheduleId);
             saveTaskMemoryToDisk();
         }
+        saveSchedulesToDisk();
         return removed != null;
     }
 
@@ -336,6 +393,7 @@ public class CortexTaskManager {
                             def.nextRunAt = 0L;
                         }
                         def.triggerCount += 1;
+                        saveSchedulesToDisk();
 
                         try {
                             submitTaskInternal(
@@ -378,6 +436,7 @@ public class CortexTaskManager {
                 instance.state = TaskState.RUNNING;
                 instance.startedAt = System.currentTimeMillis();
                 cancelRequested = false;
+                saveTaskRunsToDisk();
 
                 CortexFsmEngine.CancellationChecker checker =
                         new CortexFsmEngine.CancellationChecker() {
@@ -429,11 +488,13 @@ public class CortexTaskManager {
                     if (instance.state == TaskState.COMPLETED) {
                         saveTaskMemoryFromSuccess(req, instance, out);
                     }
+                    saveTaskRunsToDisk();
 
                 } catch (Exception e) {
                     instance.finishedAt = System.currentTimeMillis();
                     instance.state = TaskState.FAILED;
                     instance.reason = String.valueOf(e);
+                    saveTaskRunsToDisk();
                 }
             } catch (InterruptedException e) {
                 // Allow graceful shutdown if ever needed.
@@ -457,6 +518,7 @@ public class CortexTaskManager {
                 }
             }
         }
+        saveTaskRunsToDisk();
     }
 
     /**
@@ -718,7 +780,7 @@ public class CortexTaskManager {
 
     private void loadTaskMemoryFromDisk() {
         try {
-            File f = new File(TASK_MEMORY_PATH);
+            File f = new File(taskMemoryPath);
             if (!f.exists() || !f.isFile()) {
                 return;
             }
@@ -757,7 +819,7 @@ public class CortexTaskManager {
 
     private void saveTaskMemoryToDisk() {
         try {
-            File f = new File(TASK_MEMORY_PATH);
+            File f = new File(taskMemoryPath);
             File parent = f.getParentFile();
             if (parent != null && !parent.exists()) {
                 //noinspection ResultOfMethodCallIgnored
@@ -769,6 +831,346 @@ public class CortexTaskManager {
             String json = Json.stringify(root);
             Files.write(f.toPath(), json.getBytes(StandardCharsets.UTF_8));
         } catch (Exception ignored) {
+        }
+    }
+
+    private void loadSchedulesFromDisk() {
+        try {
+            Map<String, Object> root = loadJsonRootWithBackup(schedulesPath);
+            if (root == null) {
+                return;
+            }
+            Object rowsObj = root.get("schedules");
+            if (!(rowsObj instanceof List)) {
+                return;
+            }
+            @SuppressWarnings("unchecked")
+            List<Object> rows = (List<Object>) rowsObj;
+            long now = System.currentTimeMillis();
+
+            scheduleRegistry.clear();
+            synchronized (scheduleOrder) {
+                scheduleOrder.clear();
+            }
+
+            for (Object o : rows) {
+                if (!(o instanceof Map)) {
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                Map<String, Object> row = (Map<String, Object>) o;
+                ScheduledTaskDef def = parseScheduleRow(row, now);
+                if (def == null || def.scheduleId == null || def.scheduleId.isEmpty()) {
+                    continue;
+                }
+                scheduleRegistry.put(def.scheduleId, def);
+                synchronized (scheduleOrder) {
+                    scheduleOrder.addLast(def.scheduleId);
+                }
+            }
+            synchronized (scheduleOrder) {
+                while (scheduleOrder.size() > MAX_SCHEDULES) {
+                    String evictId = scheduleOrder.pollFirst();
+                    if (evictId != null) {
+                        scheduleRegistry.remove(evictId);
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void saveSchedulesToDisk() {
+        try {
+            List<Object> rows = new ArrayList<Object>();
+            List<String> ids;
+            synchronized (scheduleOrder) {
+                ids = new ArrayList<String>(scheduleOrder);
+            }
+            for (String id : ids) {
+                ScheduledTaskDef def = scheduleRegistry.get(id);
+                if (def == null) continue;
+                rows.add(snapshotSchedule(def));
+            }
+            Map<String, Object> root = new LinkedHashMap<String, Object>();
+            root.put("schema_version", "schedules.v1");
+            root.put("updated_at", System.currentTimeMillis());
+            root.put("schedules", rows);
+            writeJsonAtomically(schedulesPath, Json.stringify(root));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void loadTaskRunsFromDisk() {
+        try {
+            Map<String, Object> root = loadJsonRootWithBackup(taskRunsPath);
+            if (root == null) {
+                return;
+            }
+            Object rowsObj = root.get("tasks");
+            if (!(rowsObj instanceof List)) {
+                return;
+            }
+            @SuppressWarnings("unchecked")
+            List<Object> rows = (List<Object>) rowsObj;
+
+            taskRegistry.clear();
+            synchronized (taskOrder) {
+                taskOrder.clear();
+            }
+
+            boolean normalized = false;
+            for (Object o : rows) {
+                if (!(o instanceof Map)) {
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                Map<String, Object> row = (Map<String, Object>) o;
+                TaskInstance inst = parseTaskRunRow(row);
+                if (inst == null || inst.taskId == null || inst.taskId.isEmpty()) {
+                    continue;
+                }
+                if (inst.state == TaskState.RUNNING || inst.state == TaskState.PENDING) {
+                    inst.state = TaskState.FAILED;
+                    String priorReason = inst.reason != null ? inst.reason : "";
+                    inst.reason = priorReason.isEmpty()
+                            ? "recovered_after_restart"
+                            : (priorReason + "; recovered_after_restart");
+                    if (inst.finishedAt <= 0L) {
+                        inst.finishedAt = System.currentTimeMillis();
+                    }
+                    normalized = true;
+                }
+                taskRegistry.put(inst.taskId, inst);
+                synchronized (taskOrder) {
+                    taskOrder.addLast(inst.taskId);
+                }
+            }
+            synchronized (taskOrder) {
+                while (taskOrder.size() > MAX_TASKS) {
+                    String evictId = taskOrder.pollFirst();
+                    if (evictId != null) {
+                        taskRegistry.remove(evictId);
+                    }
+                }
+            }
+            if (normalized) {
+                saveTaskRunsToDisk();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void saveTaskRunsToDisk() {
+        try {
+            List<Object> rows = new ArrayList<Object>();
+            List<String> ids;
+            synchronized (taskOrder) {
+                ids = new ArrayList<String>(taskOrder);
+            }
+            for (String id : ids) {
+                TaskInstance inst = taskRegistry.get(id);
+                if (inst == null) continue;
+                rows.add(snapshotTaskRun(inst));
+            }
+            Map<String, Object> root = new LinkedHashMap<String, Object>();
+            root.put("schema_version", "task_runs.v1");
+            root.put("updated_at", System.currentTimeMillis());
+            root.put("tasks", rows);
+            writeJsonAtomically(taskRunsPath, Json.stringify(root));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static Map<String, Object> snapshotTaskRun(TaskInstance inst) {
+        Map<String, Object> row = new LinkedHashMap<String, Object>();
+        row.put("task_id", inst.taskId);
+        row.put("user_task", inst.userTask);
+        row.put("state", inst.state != null ? inst.state.name() : "");
+        row.put("created_at", inst.createdAt);
+        row.put("started_at", inst.startedAt);
+        row.put("finished_at", inst.finishedAt);
+        row.put("final_state", inst.finalState);
+        row.put("reason", inst.reason);
+        row.put("package_name", inst.packageName);
+        row.put("target_page", inst.targetPage);
+        row.put("source", inst.source);
+        row.put("schedule_id", inst.scheduleId);
+        row.put("user_playbook", inst.userPlaybook);
+        row.put("task_memory_key", inst.taskMemoryKey);
+        row.put("memory_applied", inst.memoryApplied);
+        return row;
+    }
+
+    private TaskInstance parseTaskRunRow(Map<String, Object> row) {
+        try {
+            TaskInstance inst = new TaskInstance();
+            inst.taskId = stringOrEmpty(row.get("task_id"));
+            inst.userTask = stringOrEmpty(row.get("user_task"));
+            inst.state = parseTaskState(stringOrEmpty(row.get("state")));
+            inst.createdAt = toLong(row.get("created_at"), 0L);
+            inst.startedAt = toLong(row.get("started_at"), 0L);
+            inst.finishedAt = toLong(row.get("finished_at"), 0L);
+            inst.finalState = stringOrEmpty(row.get("final_state"));
+            inst.reason = stringOrEmpty(row.get("reason"));
+            inst.packageName = stringOrEmpty(row.get("package_name"));
+            inst.targetPage = stringOrEmpty(row.get("target_page"));
+            inst.source = stringOrEmpty(row.get("source"));
+            inst.scheduleId = stringOrEmpty(row.get("schedule_id"));
+            inst.userPlaybook = stringOrEmpty(row.get("user_playbook"));
+            inst.taskMemoryKey = stringOrEmpty(row.get("task_memory_key"));
+            inst.memoryApplied = toBool(row.get("memory_applied"), false);
+            return inst;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static TaskState parseTaskState(String s) {
+        if (s == null) return TaskState.FAILED;
+        try {
+            return TaskState.valueOf(s);
+        } catch (Exception ignored) {
+            return TaskState.FAILED;
+        }
+    }
+
+    private ScheduledTaskDef parseScheduleRow(Map<String, Object> row, long now) {
+        try {
+            ScheduledTaskDef def = new ScheduledTaskDef();
+            def.scheduleId = stringOrEmpty(row.get("schedule_id"));
+            def.name = stringOrEmpty(row.get("name"));
+            def.userTask = stringOrEmpty(row.get("user_task"));
+            def.packageName = stringOrEmpty(row.get("package"));
+            def.mapPath = stringOrEmpty(row.get("map_path"));
+            if (def.mapPath.isEmpty()) def.mapPath = null;
+            def.startPage = stringOrEmpty(row.get("start_page"));
+            if (def.startPage.isEmpty()) def.startPage = null;
+            def.traceMode = stringOrEmpty(row.get("trace_mode"));
+            if (def.traceMode.isEmpty()) def.traceMode = null;
+            int port = toInt(row.get("trace_udp_port"), 0);
+            def.traceUdpPort = port > 0 ? Integer.valueOf(port) : null;
+            def.userPlaybook = stringOrEmpty(row.get("user_playbook"));
+            def.runAtMs = toLong(row.get("run_at"), 0L);
+            def.repeatMode = normalizeRepeatMode(stringOrEmpty(row.get("repeat_mode")));
+            def.repeatWeekdays = toInt(row.get("repeat_weekdays"), 0) & 0x7F;
+            if ("weekly".equals(def.repeatMode) && def.repeatWeekdays == 0) {
+                def.repeatWeekdays = 0b0011111;
+            }
+            def.nextRunAt = toLong(row.get("next_run_at"), 0L);
+            def.lastTriggeredAt = toLong(row.get("last_triggered_at"), 0L);
+            def.triggerCount = toLong(row.get("trigger_count"), 0L);
+            def.enabled = toBool(row.get("enabled"), true);
+            def.createdAt = toLong(row.get("created_at"), now);
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(def.runAtMs > 0 ? def.runAtMs : now);
+            def.hourOfDay = c.get(Calendar.HOUR_OF_DAY);
+            def.minuteOfHour = c.get(Calendar.MINUTE);
+
+            if (def.enabled) {
+                if ("once".equals(def.repeatMode)) {
+                    if (def.nextRunAt <= 0L) {
+                        def.nextRunAt = def.runAtMs;
+                    }
+                    if (def.nextRunAt <= 0L) {
+                        def.enabled = false;
+                    }
+                } else if ("daily".equals(def.repeatMode)) {
+                    if (def.nextRunAt <= 0L) {
+                        def.nextRunAt = computeNextDailyRun(def.hourOfDay, def.minuteOfHour, now);
+                    }
+                } else if ("weekly".equals(def.repeatMode)) {
+                    if (def.nextRunAt <= 0L) {
+                        def.nextRunAt = computeNextWeeklyRun(
+                                def.hourOfDay,
+                                def.minuteOfHour,
+                                def.repeatWeekdays,
+                                now
+                        );
+                    }
+                }
+            }
+            return def;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static int toInt(Object o, int def) {
+        if (o == null) return def;
+        if (o instanceof Number) return ((Number) o).intValue();
+        try {
+            return Integer.parseInt(String.valueOf(o));
+        } catch (Exception ignored) {
+            return def;
+        }
+    }
+
+    private static long toLong(Object o, long def) {
+        if (o == null) return def;
+        if (o instanceof Number) return ((Number) o).longValue();
+        try {
+            return Long.parseLong(String.valueOf(o));
+        } catch (Exception ignored) {
+            return def;
+        }
+    }
+
+    private static boolean toBool(Object o, boolean def) {
+        if (o == null) return def;
+        if (o instanceof Boolean) return ((Boolean) o).booleanValue();
+        String s = String.valueOf(o).trim();
+        if (s.isEmpty()) return def;
+        return "true".equalsIgnoreCase(s) || "1".equals(s);
+    }
+
+    private static Map<String, Object> loadJsonRootWithBackup(String path) {
+        Object primary = parseJsonFile(path);
+        if (primary instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> root = (Map<String, Object>) primary;
+            return root;
+        }
+        Object backup = parseJsonFile(path + ".bak");
+        if (backup instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> root = (Map<String, Object>) backup;
+            return root;
+        }
+        return null;
+    }
+
+    private static Object parseJsonFile(String path) {
+        try {
+            File f = new File(path);
+            if (!f.exists() || !f.isFile()) return null;
+            String s = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+            return Json.parse(s);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static void writeJsonAtomically(String path, String json) throws Exception {
+        File target = new File(path);
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            parent.mkdirs();
+        }
+        File tmp = new File(path + ".tmp");
+        File bak = new File(path + ".bak");
+        Files.write(tmp.toPath(), json.getBytes(StandardCharsets.UTF_8));
+        if (target.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            bak.delete();
+            //noinspection ResultOfMethodCallIgnored
+            target.renameTo(bak);
+        }
+        if (!tmp.renameTo(target)) {
+            Files.write(target.toPath(), json.getBytes(StandardCharsets.UTF_8));
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
         }
     }
 
@@ -910,6 +1312,70 @@ public class CortexTaskManager {
             return s;
         }
         return "once";
+    }
+
+    private static long computeFirstRunAt(long runAtMs, String repeatMode, int repeatWeekdays, long now) {
+        if ("daily".equals(repeatMode)) {
+            if (runAtMs > now) {
+                return runAtMs;
+            }
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(runAtMs);
+            return computeNextDailyRun(
+                    c.get(Calendar.HOUR_OF_DAY),
+                    c.get(Calendar.MINUTE),
+                    now
+            );
+        }
+        if ("weekly".equals(repeatMode)) {
+            if (runAtMs > now && isWeekdaySelected(runAtMs, repeatWeekdays)) {
+                return runAtMs;
+            }
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(runAtMs);
+            return computeNextWeeklyRun(
+                    c.get(Calendar.HOUR_OF_DAY),
+                    c.get(Calendar.MINUTE),
+                    repeatWeekdays,
+                    now
+            );
+        }
+        if (runAtMs <= now) {
+            throw new IllegalArgumentException("run_at must be in the future for one-shot schedule");
+        }
+        return runAtMs;
+    }
+
+    private static String resolveTaskMemoryPath() {
+        String override = System.getProperty("lxb.task.memory.path");
+        if (override != null && !override.trim().isEmpty()) {
+            return override.trim();
+        }
+        return DEFAULT_TASK_MEMORY_PATH;
+    }
+
+    private static String resolveSchedulesPath(String taskMemoryPath) {
+        String override = System.getProperty("lxb.schedules.path");
+        if (override != null && !override.trim().isEmpty()) {
+            return override.trim();
+        }
+        File p = new File(taskMemoryPath).getParentFile();
+        if (p != null) {
+            return new File(p, "schedules.v1.json").getAbsolutePath();
+        }
+        return DEFAULT_SCHEDULES_PATH;
+    }
+
+    private static String resolveTaskRunsPath(String taskMemoryPath) {
+        String override = System.getProperty("lxb.task.runs.path");
+        if (override != null && !override.trim().isEmpty()) {
+            return override.trim();
+        }
+        File p = new File(taskMemoryPath).getParentFile();
+        if (p != null) {
+            return new File(p, "task_runs.v1.json").getAbsolutePath();
+        }
+        return DEFAULT_TASK_RUNS_PATH;
     }
 
     // Future public methods (not implemented yet):
