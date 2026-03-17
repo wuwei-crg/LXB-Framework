@@ -254,7 +254,7 @@ public class LlmClient {
         messages.add(user);
 
         root.put("messages", messages);
-        root.put("max_tokens", 8192);
+        root.put("max_tokens", 60000);
         return Json.stringify(root);
     }
 
