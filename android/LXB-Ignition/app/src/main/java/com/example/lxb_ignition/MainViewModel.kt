@@ -479,7 +479,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendSystemMessage("Invalid lxb-core port, cannot add schedule.")
             return
         }
+        val name = scheduleName.value.trim()
         val task = scheduleTask.value.trim()
+        val packageName = schedulePackage.value.trim()
+        val startPage = scheduleStartPage.value.trim()
+        val playbook = schedulePlaybook.value.trim()
         if (task.isEmpty()) {
             appendSystemMessage("Schedule task cannot be empty.")
             return
@@ -505,17 +509,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 LocalLinkClient("127.0.0.1", port).use { client ->
                     runCatching { client.handshake() }
                     val payloadJson = org.json.JSONObject()
-                        .put("name", scheduleName.value.trim())
+                        .put("name", name)
                         .put("user_task", task)
-                        .put("package", schedulePackage.value.trim())
-                        .put("start_page", scheduleStartPage.value.trim())
+                        .put("package", packageName)
+                        .put("start_page", startPage)
                         .put("trace_mode", "push")
                         .put("trace_udp_port", TRACE_UDP_PORT)
                         .put("run_at", runAt)
                         .put("repeat_mode", repeatMode)
                         .put("repeat_weekdays", repeatWeekdays and 0x7F)
                         .put("repeat_daily", repeatMode == REPEAT_DAILY) // backward compatibility
-                        .put("user_playbook", schedulePlaybook.value.trim())
+                        .put("user_playbook", playbook)
                         .toString()
                     val resp = client.sendCommand(
                         CommandIds.CMD_CORTEX_SCHEDULE_ADD,
@@ -558,7 +562,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendSystemMessage("Invalid lxb-core port, cannot update schedule.")
             return
         }
+        val name = scheduleName.value.trim()
         val task = scheduleTask.value.trim()
+        val packageName = schedulePackage.value.trim()
+        val startPage = scheduleStartPage.value.trim()
+        val playbook = schedulePlaybook.value.trim()
         if (task.isEmpty()) {
             appendSystemMessage("Schedule task cannot be empty.")
             return
@@ -585,17 +593,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     runCatching { client.handshake() }
                     val payloadJson = org.json.JSONObject()
                         .put("schedule_id", sid)
-                        .put("name", scheduleName.value.trim())
+                        .put("name", name)
                         .put("user_task", task)
-                        .put("package", schedulePackage.value.trim())
-                        .put("start_page", scheduleStartPage.value.trim())
+                        .put("package", packageName)
+                        .put("start_page", startPage)
                         .put("trace_mode", "push")
                         .put("trace_udp_port", TRACE_UDP_PORT)
                         .put("run_at", runAt)
                         .put("repeat_mode", repeatMode)
                         .put("repeat_weekdays", repeatWeekdays and 0x7F)
                         .put("repeat_daily", repeatMode == REPEAT_DAILY) // backward compatibility
-                        .put("user_playbook", schedulePlaybook.value.trim())
+                        .put("user_playbook", playbook)
                         .toString()
                     val resp = client.sendCommand(
                         CommandIds.CMD_CORTEX_SCHEDULE_UPDATE,
