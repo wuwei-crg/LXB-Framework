@@ -10,10 +10,11 @@ import java.util.Map;
 
 /**
  * Staged locator resolution:
- * 1) strict match by self features (resource_id/text/content_desc/class) as a conjunction
- * 2) if still multiple and locator has parent_rid, use it only as a tightening condition
- * 3) if still multiple and locator has bounds_hint, pick nearest by center distance
- * 4) if still multiple and locator has index/count, pick by stable ordering (future)
+ * 1) strict match by self features without text (resource_id/content_desc/class)
+ * 2) if locator has text, use it as an optional tightening stage
+ * 3) if still multiple and locator has parent_rid, use it only as a tightening condition
+ * 4) if still multiple and locator has bounds_hint, pick nearest by center distance
+ * 5) if still multiple and locator has index/count, pick by stable ordering (future)
  *
  * Fail-fast: if no candidates after stage 1, throw.
  */
@@ -46,53 +47,70 @@ public class LocatorResolver {
         //    geometric containment between actionable nodes (aligned with Python side).
         List<Candidate> candidates = enrichFromActions(actions);
 
-        // Stage 1: strict self match (AND all non-empty fields)
+        // Stage 1: strict self match WITHOUT text (AND all non-empty fields except text)
         List<Candidate> stage1 = new ArrayList<>();
         for (Candidate c : candidates) {
-            if (matchesSelf(locator, c)) stage1.add(c);
+            if (matchesSelfNoText(locator, c)) stage1.add(c);
         }
         if (stage1.isEmpty()) {
             Map<String, Object> f = new LinkedHashMap<>();
-            f.put("stage", "self");
+            f.put("stage", "self_no_text");
             f.put("reason", "no_candidates");
             trace.event("resolve_fail", f);
-            throw new IllegalStateException("locator match: no candidates (self features)");
+            throw new IllegalStateException("locator match: no candidates (self_no_text features)");
         }
-        if (stage1.size() == 1) {
+        List<Candidate> stage2 = stage1;
+        String text = Util.normalizeText(locator.text);
+        if (!text.isEmpty() && stage1.size() > 1) {
+            List<Candidate> textFiltered = new ArrayList<>();
+            for (Candidate c : stage1) {
+                if (text.equals(c.text)) textFiltered.add(c);
+            }
+            if (!textFiltered.isEmpty()) {
+                stage2 = textFiltered;
+            }
+            Map<String, Object> stageText = new LinkedHashMap<>();
+            stageText.put("stage", "self_text");
+            stageText.put("before", stage1.size());
+            stageText.put("after", stage2.size());
+            stageText.put("hit", !textFiltered.isEmpty());
+            trace.event("resolve_stage", stageText);
+        }
+        if (stage2.size() == 1) {
             Map<String, Object> ok = new LinkedHashMap<>();
-            ok.put("stage", "self");
+            ok.put("stage", "self_text");
             ok.put("candidates", 1);
             trace.event("resolve_ok", ok);
-            return new ResolvedNode(stage1.get(0).bounds, 1, "self");
+            return new ResolvedNode(stage2.get(0).bounds, stage1.size(), "self_text");
         }
 
-        // Stage 2: parent_rid tightening (optional)
-        List<Candidate> stage2 = stage1;
+        // Stage 3: parent_rid tightening (optional)
+        List<Candidate> stage3 = stage2;
         String parentRid = Util.normalizeResourceId(locator.parentRid);
         if (!parentRid.isEmpty()) {
             List<Candidate> filtered = new ArrayList<>();
-            for (Candidate c : stage1) {
+            for (Candidate c : stage2) {
                 if (parentRid.equals(c.parentRid)) filtered.add(c);
             }
             if (!filtered.isEmpty()) {
-                stage2 = filtered;
+                stage3 = filtered;
             }
-            if (stage2.size() == 1) {
+            if (stage3.size() == 1) {
                 Map<String, Object> ok = new LinkedHashMap<>();
                 ok.put("stage", "parent_rid");
                 ok.put("candidates", 1);
                 trace.event("resolve_ok", ok);
-                return new ResolvedNode(stage2.get(0).bounds, stage1.size(), "parent_rid");
+                return new ResolvedNode(stage3.get(0).bounds, stage1.size(), "parent_rid");
             }
         }
 
-        // Stage 3: bounds_hint tie-break (optional)
+        // Stage 4: bounds_hint tie-break (optional)
         if (locator.boundsHint != null) {
             Candidate best = null;
             long bestDist = Long.MAX_VALUE;
             int hx = locator.boundsHint.centerX();
             int hy = locator.boundsHint.centerY();
-            for (Candidate c : stage2) {
+            for (Candidate c : stage3) {
                 long dx = (long) c.bounds.centerX() - hx;
                 long dy = (long) c.bounds.centerY() - hy;
                 long d2 = dx * dx + dy * dy;
@@ -104,30 +122,28 @@ public class LocatorResolver {
             if (best != null) {
                 Map<String, Object> ok = new LinkedHashMap<>();
                 ok.put("stage", "bounds_hint");
-                ok.put("candidates", stage2.size());
+                ok.put("candidates", stage3.size());
                 ok.put("dist2", bestDist);
                 trace.event("resolve_ok", ok);
                 return new ResolvedNode(best.bounds, stage1.size(), "bounds_hint");
             }
         }
 
-        // Stage 4: index/count (future). For now, fail to avoid random taps.
+        // Stage 5: index/count (future). For now, fail to avoid random taps.
         Map<String, Object> f = new LinkedHashMap<>();
         f.put("stage", "ambiguous");
-        f.put("candidates", stage2.size());
+        f.put("candidates", stage3.size());
         trace.event("resolve_fail", f);
-        throw new IllegalStateException("locator match: ambiguous candidates=" + stage2.size());
+        throw new IllegalStateException("locator match: ambiguous candidates=" + stage3.size());
     }
 
-    private static boolean matchesSelf(Locator l, Candidate c) {
+    private static boolean matchesSelfNoText(Locator l, Candidate c) {
         String rid = Util.normalizeResourceId(l.resourceId);
         String cls = Util.normalizeClass(l.className);
-        String text = Util.normalizeText(l.text);
         String desc = Util.normalizeText(l.contentDesc);
 
         if (!rid.isEmpty() && !rid.equals(c.resourceId)) return false;
         if (!cls.isEmpty() && !cls.equals(c.className)) return false;
-        if (!text.isEmpty() && !text.equals(c.text)) return false;
         if (!desc.isEmpty() && !desc.equals(c.contentDesc)) return false;
 
         return true;
