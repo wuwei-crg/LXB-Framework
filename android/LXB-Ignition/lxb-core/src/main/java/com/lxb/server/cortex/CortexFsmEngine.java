@@ -130,14 +130,17 @@ public class CortexFsmEngine {
     private final MapManager mapManager;
     private final MapPromptPlanner mapPlanner;
     private static final int LAUNCH_RETRY_MAX = 3;
-    private static final long LAUNCH_WAIT_TIMEOUT_MS = 5000L;
-    private static final long LAUNCH_WAIT_SAMPLE_MS = 500L;
-    private static final int LAUNCH_READY_REQUIRED_HITS = 2;
+    private static final long LAUNCH_WAIT_TIMEOUT_MS = 8000L;
+    private static final long LAUNCH_WAIT_SAMPLE_MS = 350L;
+    private static final int LAUNCH_READY_REQUIRED_HITS = 1;
+    private static final long LAUNCH_POST_START_WAIT_MS = 1200L;
     private static final int INPUT_METHOD_ADB = 0;
     private static final int INPUT_METHOD_CLIPBOARD = 1;
     private static final long UI_SETTLE_TIMEOUT_MS = 2500L;
     private static final long UI_SETTLE_SAMPLE_MS = 500L;
     private static final long UI_SETTLE_FALLBACK_MS = 600L;
+    private static final long UI_SETTLE_PRE_WAIT_MS = 1000L;
+    private static final long SWIPE_POST_WAIT_MS = 1500L;
     private static final double UI_SETTLE_SIM_THRESHOLD = 0.90d;
     private static final int UI_SETTLE_REQUIRED_HITS = 2;
     private static final int FAST_SKIP_MAX_TURNS = 2;
@@ -316,12 +319,14 @@ public class CortexFsmEngine {
                 ctx.pendingHistoryExpected = "";
                 ctx.pendingHistoryCarryContext = "";
 
-                // Select package: caller-provided package has highest priority, then sub_task appHint.
+                // Select package:
+                // - caller-provided package has highest priority.
+                // - sub_task appHint is intentionally NOT used for execution routing.
+                //   APP_RESOLVE remains the single source of truth for package selection.
                 if (!initialPackageName.isEmpty()) {
                     ctx.selectedPackage = initialPackageName;
                 } else {
-                    String hint = st.appHint != null ? st.appHint.trim() : "";
-                    ctx.selectedPackage = hint;
+                    ctx.selectedPackage = "";
                 }
 
                 // Use sub_task description as current userTask for prompts.
@@ -335,12 +340,14 @@ public class CortexFsmEngine {
                 subBegin.put("sub_task_id", st.id);
                 subBegin.put("mode", st.mode);
                 subBegin.put("app_hint", st.appHint);
+                subBegin.put("app_hint_used", false);
                 trace.event("fsm_sub_task_begin", subBegin);
 
                 // Memory fast path is intentionally disabled for now.
                 // Always use the full pipeline to keep execution deterministic.
                 state = State.APP_RESOLVE;
-                for (int step = 0; step < 30; step++) {
+                int subTaskStepLimit = Math.max(40, resolveVisionMaxTurns(ctx) + 20);
+                for (int step = 0; step < subTaskStepLimit; step++) {
                     if (cancellationChecker != null && cancellationChecker.isCancelled()) {
                         ctx.error = "cancelled_by_user";
                         Map<String, Object> cancelEv = new LinkedHashMap<>();
@@ -372,6 +379,18 @@ public class CortexFsmEngine {
                     ctx.error = "unknown_state:" + state.name();
                     state = State.FAIL;
                     break;
+                }
+                if (state != State.FINISH && state != State.FAIL) {
+                    ctx.error = "sub_task_step_limit_exceeded";
+                    Map<String, Object> limitEv = new LinkedHashMap<>();
+                    limitEv.put("task_id", ctx.taskId);
+                    limitEv.put("sub_task_id", st.id);
+                    limitEv.put("mode", st.mode);
+                    limitEv.put("step_limit", subTaskStepLimit);
+                    limitEv.put("vision_turns", ctx.visionTurns);
+                    limitEv.put("state", state.name());
+                    trace.event("fsm_sub_task_step_limit", limitEv);
+                    state = State.FAIL;
                 }
 
                 lastState = state;
@@ -571,106 +590,36 @@ public class CortexFsmEngine {
     /**
      * Coordinate-space probe, Java port of Python _probe_coordinate_space.
      *
-     * This is a lightweight text-only variant: we ask the LLM for a synthetic 4-corner
-     * coordinate system and treat it as the model's native range. If VLM is added later,
-     * this can be upgraded to use a real image probe.
+     * Normalized-coordinate mode:
+     * - force a stable logical space: top-left (0,0), bottom-right (1000,1000)
+     * - avoid extra LLM variability during INIT.
      */
-    @SuppressWarnings("unchecked")
     private Map<String, Object> runCoordProbe(Context ctx) {
         Map<String, Object> result = new LinkedHashMap<>();
-        // For now always enabled; can be made configurable if needed.
+        result.put("max_x", 1000.0d);
+        result.put("max_y", 1000.0d);
+        result.put("x_min", 0.0d);
+        result.put("x_max", 1000.0d);
+        result.put("y_min", 0.0d);
+        result.put("y_max", 1000.0d);
+        result.put("span_x", 1000.0d);
+        result.put("span_y", 1000.0d);
+        Map<String, Object> points = new LinkedHashMap<>();
+        points.put("tl", Arrays.asList(0.0d, 0.0d));
+        points.put("tr", Arrays.asList(1000.0d, 0.0d));
+        points.put("bl", Arrays.asList(0.0d, 1000.0d));
+        points.put("br", Arrays.asList(1000.0d, 1000.0d));
+        result.put("points", points);
+        Map<String, Object> probeSize = new LinkedHashMap<>();
+        probeSize.put("width", 1000);
+        probeSize.put("height", 1000);
+        result.put("probe_size", probeSize);
 
-        // We do a simple logical probe: assume the model uses a 0~999 square.
-        // This mirrors the Python behavior enough for _map_point_by_probe semantics.
-        try {
-            String prompt = "Coordinate Calibration Task.\n"
-                    + "You are calibrating a logical 2D coordinate space for a mobile screen.\n"
-                    + "Return ONLY JSON with this exact schema:\n"
-                    + "{\"tl\":[x,y],\"tr\":[x,y],\"bl\":[x,y],\"br\":[x,y]}\n"
-                    + "Rules:\n"
-                    + "1) Use a square coordinate range where top-left is near (0,0).\n"
-                    + "2) top-right has max X and min Y; bottom-left has min X and max Y; bottom-right has max X and max Y.\n"
-                    + "3) Use integers, no decimals.\n"
-                    + "4) Do NOT add markdown or comments.\n";
-
-            LlmConfig cfg = LlmConfig.loadDefault();
-            String raw = llmClient.chatOnce(cfg, null, prompt);
-
-            Map<String, Object> parsed = extractJsonObjectFromText(raw);
-            if (parsed.isEmpty()) {
-                return result;
-            }
-            Map<String, List<Number>> pts = new LinkedHashMap<>();
-            for (String key : new String[]{"tl", "tr", "bl", "br"}) {
-                Object v = parsed.get(key);
-                if (!(v instanceof List)) {
-                    return result;
-                }
-                List<?> arr = (List<?>) v;
-                if (arr.size() < 2) {
-                    return result;
-                }
-                Number x = toNumber(arr.get(0));
-                Number y = toNumber(arr.get(1));
-                if (x == null || y == null) {
-                    return result;
-                }
-                List<Number> pair = new ArrayList<>(2);
-                pair.add(x);
-                pair.add(y);
-                pts.put(key, pair);
-            }
-
-            double xMin = (pts.get("tl").get(0).doubleValue() + pts.get("bl").get(0).doubleValue()) / 2.0;
-            double xMax = (pts.get("tr").get(0).doubleValue() + pts.get("br").get(0).doubleValue()) / 2.0;
-            double yMin = (pts.get("tl").get(1).doubleValue() + pts.get("tr").get(1).doubleValue()) / 2.0;
-            double yMax = (pts.get("bl").get(1).doubleValue() + pts.get("br").get(1).doubleValue()) / 2.0;
-            double spanX = Math.max(1e-6, xMax - xMin);
-            double spanY = Math.max(1e-6, yMax - yMin);
-
-            double maxX = Math.max(
-                    Math.max(pts.get("tl").get(0).doubleValue(), pts.get("tr").get(0).doubleValue()),
-                    Math.max(pts.get("bl").get(0).doubleValue(), pts.get("br").get(0).doubleValue())
-            );
-            double maxY = Math.max(
-                    Math.max(pts.get("tl").get(1).doubleValue(), pts.get("tr").get(1).doubleValue()),
-                    Math.max(pts.get("bl").get(1).doubleValue(), pts.get("br").get(1).doubleValue())
-            );
-
-            Map<String, Object> points = new LinkedHashMap<>();
-            for (Map.Entry<String, List<Number>> e : pts.entrySet()) {
-                List<Number> p = e.getValue();
-                List<Double> coord = new ArrayList<>(2);
-                coord.add(p.get(0).doubleValue());
-                coord.add(p.get(1).doubleValue());
-                points.put(e.getKey(), coord);
-            }
-
-            result.put("max_x", round4(maxX));
-            result.put("max_y", round4(maxY));
-            result.put("x_min", round4(xMin));
-            result.put("x_max", round4(xMax));
-            result.put("y_min", round4(yMin));
-            result.put("y_max", round4(yMax));
-            result.put("span_x", round4(spanX));
-            result.put("span_y", round4(spanY));
-            result.put("points", points);
-            Map<String, Object> probeSize = new LinkedHashMap<>();
-            probeSize.put("width", 1000);
-            probeSize.put("height", 1000);
-            result.put("probe_size", probeSize);
-
-            Map<String, Object> ev = new LinkedHashMap<>(result);
-            ev.put("task_id", ctx.taskId);
-            trace.event("coord_probe_done", ev);
-            return result;
-        } catch (Exception e) {
-            Map<String, Object> ev = new LinkedHashMap<>();
-            ev.put("task_id", ctx.taskId);
-            ev.put("reason", String.valueOf(e));
-            trace.event("coord_probe_failed", ev);
-            return result;
-        }
+        Map<String, Object> ev = new LinkedHashMap<>(result);
+        ev.put("task_id", ctx.taskId);
+        ev.put("mode", "fixed_normalized_1000");
+        trace.event("coord_probe_done", ev);
+        return result;
     }
 
     private static Number toNumber(Object o) {
@@ -949,15 +898,15 @@ public class CortexFsmEngine {
         sb.append("  Examples: sign in to all forums, like all unread posts, clear all unread notifications.\n");
         sb.append("- For loop sub_tasks, do NOT create one sub_task per item; instead create a single loop sub_task that covers all items.\n");
         sb.append("\n");
-        sb.append("Each sub_task MUST have fields: id, description, mode, app_hint, inputs, outputs, success_criteria.\n");
+        sb.append("Each sub_task MUST have fields: id, description, mode, inputs, outputs, success_criteria.\n");
+        sb.append("Optional fields are allowed (for example app_hint), but they are not required.\n");
         sb.append("Additional rules:\n");
         sb.append("1) mode is either \"single\" or \"loop\".\n");
         sb.append("2) For loop sub_tasks, add loop_metadata with loop_unit, loop_target_condition, loop_termination_criteria, max_iterations.\n");
-        sb.append("3) Use app_hint to prefer an installed app when obvious (e.g. Bilibili, Taobao, WeChat).\n");
-        sb.append("4) If the task is simple and fits in one app, return a single sub_task.\n");
-        sb.append("5) For multi-app tasks, break into multiple sub_tasks and wire outputs/inputs.\n");
-        sb.append("6) sub_tasks count should usually be between 1 and 5, never dozens.\n");
-        sb.append("7) Do NOT output markdown, code fences, or comments.\n");
+        sb.append("3) If the task is simple and fits in one app, return a single sub_task.\n");
+        sb.append("4) For multi-app tasks, break into multiple sub_tasks and wire outputs/inputs.\n");
+        sb.append("5) sub_tasks count should usually be between 1 and 5, never dozens.\n");
+        sb.append("6) Do NOT output markdown, code fences, or comments.\n");
         return sb.toString();
     }
 
@@ -1061,9 +1010,10 @@ public class CortexFsmEngine {
         sb.append("{\"package_name\":\"one_package_from_apps\"}\n");
         sb.append("Rules:\n");
         sb.append("1) package_name MUST be exactly one of the \"package\" values above.\n");
-        sb.append("2) If the task clearly refers to a specific brand (e.g., Bilibili, Taobao), map it to that app.\n");
-        sb.append("3) If ambiguous, choose the app that typical users would most likely use.\n");
-        sb.append("4) Do NOT explain, do NOT add markdown, do NOT add comments.\n");
+        sb.append("2) package_name MUST be a package id string (e.g., com.tencent.mm), NOT app label/name (e.g., 微信).\n");
+        sb.append("3) If the task clearly refers to a specific brand (e.g., Bilibili, Taobao), map it to that app.\n");
+        sb.append("4) If ambiguous, choose the app that typical users would most likely use.\n");
+        sb.append("5) Do NOT explain, do NOT add markdown, do NOT add comments.\n");
         return sb.toString();
     }
 
@@ -1075,6 +1025,7 @@ public class CortexFsmEngine {
     private String buildAppResolveSystemPrompt() {
         return "You are an assistant that selects the best Android app to handle a task.\n"
                 + "You MUST output strict JSON only with a single field: package_name.\n"
+                + "package_name must be an installed package id (contains dots), never a human-readable app label.\n"
                 + "Do not output markdown or any extra commentary.";
     }
 
@@ -1347,6 +1298,19 @@ public class CortexFsmEngine {
         return stringOrEmpty(first.get("package"));
     }
 
+    private boolean isKnownCandidatePackage(Context ctx, String pkg) {
+        String p = pkg != null ? pkg.trim() : "";
+        if (p.isEmpty()) {
+            return false;
+        }
+        for (Map<String, Object> c : ctx.appCandidates) {
+            if (p.equals(stringOrEmpty(c.get("package")))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String resolvePackageLabel(Context ctx, String pkg) {
         String p = pkg != null ? pkg.trim() : "";
         if (p.isEmpty()) {
@@ -1420,6 +1384,16 @@ public class CortexFsmEngine {
             trace.event("llm_response_app_resolve", respEv);
 
             chosenPackage = extractPackageFromResponse(raw);
+            if (!chosenPackage.isEmpty() && !isKnownCandidatePackage(ctx, chosenPackage)) {
+                usedFallback = true;
+                Map<String, Object> invalidEv = new LinkedHashMap<>();
+                invalidEv.put("task_id", ctx.taskId);
+                invalidEv.put("state", State.APP_RESOLVE.name());
+                invalidEv.put("llm_package", chosenPackage);
+                invalidEv.put("reason", "not_in_candidates_or_label");
+                trace.event("llm_response_app_resolve_invalid_package", invalidEv);
+                chosenPackage = "";
+            }
         } catch (Exception e) {
             usedFallback = true;
             Map<String, Object> errEv = new LinkedHashMap<>();
@@ -1830,16 +1804,31 @@ public class CortexFsmEngine {
                     continue;
                 }
                 boolean launchOk = launchAppClearTaskForRouting(packageName);
+                if (launchOk) {
+                    Map<String, Object> postWaitEv = new LinkedHashMap<>();
+                    postWaitEv.put("task_id", ctx.taskId);
+                    postWaitEv.put("package", packageName);
+                    postWaitEv.put("attempt", attempt);
+                    postWaitEv.put("wait_ms", LAUNCH_POST_START_WAIT_MS);
+                    trace.event("fsm_routing_launch_post_wait", postWaitEv);
+                    sleepQuiet(LAUNCH_POST_START_WAIT_MS);
+                }
                 boolean packageReady = launchOk && waitForForegroundPackageForRouting(
                         packageName, LAUNCH_WAIT_TIMEOUT_MS, LAUNCH_WAIT_SAMPLE_MS, LAUNCH_READY_REQUIRED_HITS
                 );
                 ActivityInfo post = getCurrentActivityInfoForRouting();
+                boolean postCheckReady = false;
+                if (!packageReady && launchOk && packageName.equals(post.packageName)) {
+                    packageReady = true;
+                    postCheckReady = true;
+                }
                 Map<String, Object> uiFingerprint = null;
                 boolean launcherLike = false;
                 if (launchOk && packageReady) {
                     uiFingerprint = captureRoutingUiFingerprint();
                     launcherLike = isLikelyLauncherUi(uiFingerprint);
-                    if (launcherLike) {
+                    // Treat launcher-like UI as failure only when foreground package is not target.
+                    if (launcherLike && !packageName.equals(post.packageName)) {
                         packageReady = false;
                     }
                 }
@@ -1851,6 +1840,7 @@ public class CortexFsmEngine {
                 ev.put("stop_before_start_in_launch", true);
                 ev.put("launch_ok", launchOk);
                 ev.put("package_ready", packageReady);
+                ev.put("post_check_ready", postCheckReady);
                 ev.put("post_package", post.packageName);
                 ev.put("post_activity", post.activityName);
                 ev.put("ready_required_hits", LAUNCH_READY_REQUIRED_HITS);
@@ -1903,15 +1893,24 @@ public class CortexFsmEngine {
     ) {
         long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
         int hits = 0;
+        int unknownSamples = 0;
         while (true) {
             String currentPkg = getCurrentPackageForRouting();
             if (expectedPackage.equals(currentPkg)) {
                 hits += 1;
+                unknownSamples = 0;
                 if (hits >= Math.max(1, requiredHits)) {
                     return true;
                 }
+            } else if (currentPkg == null || currentPkg.trim().isEmpty()) {
+                // Transient GET_ACTIVITY miss: do not immediately clear progress.
+                unknownSamples += 1;
+                if (unknownSamples >= 3) {
+                    hits = 0;
+                }
             } else {
                 hits = 0;
+                unknownSamples = 0;
             }
             if (System.currentTimeMillis() >= deadline) {
                 return false;
@@ -2780,20 +2779,9 @@ public class CortexFsmEngine {
 
         // Build full VISION_ACT prompt, extended with current sub_task contract when available.
         String prompt = buildVisionPrompt(ctx);
-        final int maxVisionParseAttempts = 3;
-        String raw = "";
-        String normalized = "";
-        String observing = "";
-        String observeResult = "";
-        String judging = "";
-        String judgeResult = "";
-        String thinking = "";
-        String actionText = "";
-        String expectedText = "";
-        String carryContextText = "";
-        String commandText = "";
-        String lastParseError = "";
-        List<Instruction> commands = null;
+        // Unified retry budget per VISION_ACT turn:
+        // parse failures + command-arg failures + planner call timeout/errors share the same attempts.
+        final int maxVisionAttempts = 3;
 
         LlmConfig cfg;
         try {
@@ -2808,13 +2796,28 @@ public class CortexFsmEngine {
             return State.FAIL;
         }
 
-        for (int attempt = 1; attempt <= maxVisionParseAttempts; attempt++) {
+        String retryReason = "";
+        for (int attempt = 1; attempt <= maxVisionAttempts; attempt++) {
+            String raw = "";
+            String normalized = "";
+            String observing = "";
+            String observeResult = "";
+            String judging = "";
+            String judgeResult = "";
+            String thinking = "";
+            String actionText = "";
+            String expectedText = "";
+            String carryContextText = "";
+            String commandText = "";
+            List<Instruction> commands;
+
             String attemptPrompt = prompt;
             if (attempt > 1) {
                 StringBuilder retryPrompt = new StringBuilder(prompt);
-                retryPrompt.append("\n\n[FORMAT_RETRY]\n");
-                retryPrompt.append("Previous response could not be parsed: ").append(lastParseError).append("\n");
-                retryPrompt.append("Return exactly the required 9 tags in order, and provide one valid DSL command in <command>.");
+                retryPrompt.append("\n\n[RETRY_CONTEXT]\n");
+                retryPrompt.append("Previous attempt failed. reason: ").append(retryReason).append("\n");
+                retryPrompt.append("Fix the output and return exactly the required 9 tags in order.\n");
+                retryPrompt.append("In <command>, output one valid command line with strict argument format.\n");
                 attemptPrompt = retryPrompt.toString();
             }
 
@@ -2829,7 +2832,20 @@ public class CortexFsmEngine {
                 // Send multimodal request (prompt + screenshot) via chat/completions.
                 raw = llmClient.chatOnce(cfg, null, attemptPrompt, screenshotPng);
             } catch (Exception e) {
-                ctx.error = "planner_call_failed:VISION_ACT:" + e;
+                retryReason = "planner_call_failed:VISION_ACT:" + e;
+                Map<String, Object> retryEv = new LinkedHashMap<>();
+                retryEv.put("task_id", ctx.taskId);
+                retryEv.put("state", State.VISION_ACT.name());
+                retryEv.put("phase", "planner_call");
+                retryEv.put("attempt", attempt);
+                retryEv.put("max_attempts", maxVisionAttempts);
+                retryEv.put("reason", retryReason);
+                retryEv.put("retrying", attempt < maxVisionAttempts);
+                trace.event("vision_retry", retryEv);
+                if (attempt < maxVisionAttempts) {
+                    continue;
+                }
+                ctx.error = retryReason;
                 Map<String, Object> fail = new LinkedHashMap<>();
                 fail.put("task_id", ctx.taskId);
                 fail.put("state", State.VISION_ACT.name());
@@ -2872,129 +2888,203 @@ public class CortexFsmEngine {
                 normalized = normalizeModelOutput(commandText, State.VISION_ACT, ctx);
                 commands = parseInstructions(normalized, 1);
                 validateAllowed(commands, VISION_ALLOWED_OPS);
-                break;
-            } catch (InstructionError e) {
-                lastParseError = e.getMessage();
+            } catch (Exception e) {
+                String parseError = e.getMessage() != null ? e.getMessage() : String.valueOf(e);
+                retryReason = "vision_parse_error:" + parseError;
                 Map<String, Object> retryEv = new LinkedHashMap<>();
                 retryEv.put("task_id", ctx.taskId);
                 retryEv.put("state", State.VISION_ACT.name());
+                retryEv.put("phase", "parse");
                 retryEv.put("attempt", attempt);
-                retryEv.put("max_attempts", maxVisionParseAttempts);
-                retryEv.put("error", lastParseError);
+                retryEv.put("max_attempts", maxVisionAttempts);
+                retryEv.put("error", parseError);
+                retryEv.put("retrying", attempt < maxVisionAttempts);
                 String retryRaw = (normalized != null && !normalized.isEmpty()) ? normalized : raw;
                 if (retryRaw != null && retryRaw.length() > 1000) {
                     retryRaw = retryRaw.substring(0, 1000) + "...";
                 }
                 retryEv.put("raw", retryRaw != null ? retryRaw : "");
                 trace.event("vision_parse_retry", retryEv);
-            }
-        }
-
-        if (commands == null) {
-            ctx.error = "vision_instruction_invalid_after_retries:" + lastParseError;
-            Map<String, Object> fail = new LinkedHashMap<>();
-            fail.put("task_id", ctx.taskId);
-            fail.put("state", State.VISION_ACT.name());
-            fail.put("error", lastParseError);
-            trace.event("vision_instruction_invalid", fail);
-            throw new IllegalStateException(ctx.error);
-        }
-
-        Map<String, Object> structured = new LinkedHashMap<>();
-        structured.put("Observing", observing);
-        structured.put("Ovserve_result", observeResult);
-        structured.put("Judging", judging);
-        structured.put("Judge_result", judgeResult);
-        structured.put("Thinking", thinking);
-        structured.put("action", actionText);
-        structured.put("expected", expectedText);
-        structured.put("carry_context", carryContextText);
-        structured.put("command", commandText);
-
-        Map<String, Object> hist = new LinkedHashMap<>();
-        hist.put("state", State.VISION_ACT.name());
-        hist.put("structured", structured);
-        hist.put("command", commandText);
-        ctx.llmHistory.add(hist);
-
-        Map<String, Object> stEv = new LinkedHashMap<>();
-        stEv.put("task_id", ctx.taskId);
-        stEv.put("state", State.VISION_ACT.name());
-        stEv.put("data", structured);
-        stEv.put("command", commandText);
-        trace.event("llm_structured_vision_act", stEv);
-
-        // External history maintenance:
-        // previous instruction/expected are matched with current actual/judgement.
-        if (!ctx.pendingHistoryInstruction.isEmpty()
-                || !ctx.pendingHistoryExpected.isEmpty()
-                || !ctx.pendingHistoryCarryContext.isEmpty()) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("instruction", ctx.pendingHistoryInstruction);
-            row.put("expected", ctx.pendingHistoryExpected);
-            String actual = !observeResult.isEmpty() ? observeResult : observing;
-            row.put("actual", actual);
-            row.put("judgement", !judgeResult.isEmpty() ? judgeResult : "unknown");
-            row.put("carry_context", ctx.pendingHistoryCarryContext);
-            ctx.visionHistory.add(row);
-            while (ctx.visionHistory.size() > 8) {
-                ctx.visionHistory.remove(0);
-            }
-
-            Map<String, Object> hEv = new LinkedHashMap<>();
-            hEv.put("task_id", ctx.taskId);
-            hEv.put("row", row);
-            hEv.put("history_size", ctx.visionHistory.size());
-            trace.event("vision_history_append", hEv);
-        }
-
-        // Stash next pair for history matching in next turn.
-        ctx.pendingHistoryInstruction = actionText != null ? actionText.trim() : "";
-        ctx.pendingHistoryExpected = expectedText != null ? expectedText.trim() : "";
-        ctx.pendingHistoryCarryContext = carryContextText;
-
-        Instruction cmd0 = commands.get(0);
-        String currentSig = cmd0.raw.trim();
-        if (!currentSig.isEmpty() && currentSig.equals(ctx.lastCommand)) {
-            ctx.sameCommandStreak += 1;
-        } else {
-            ctx.sameCommandStreak = 1;
-        }
-        ctx.lastCommand = currentSig;
-
-        if (ctx.sameCommandStreak >= 3 && ctx.sameActivityStreak >= 3) {
-            ctx.error = "vision_action_loop_detected:repeated_same_command";
-            Map<String, Object> fail = new LinkedHashMap<>();
-            fail.put("task_id", ctx.taskId);
-            fail.put("command", currentSig);
-            fail.put("same_command_streak", ctx.sameCommandStreak);
-            fail.put("same_activity_streak", ctx.sameActivityStreak);
-            trace.event("vision_action_loop_detected", fail);
-            return State.FAIL;
-        }
-
-        appendCommands(ctx, State.VISION_ACT, commands);
-
-        for (Instruction cmd : commands) {
-            if ("DONE".equals(cmd.op)) {
-                String doneSummary = cmd.args.isEmpty() ? "" : String.join(" ", cmd.args).trim();
-                if (doneSummary.isEmpty()) {
-                    doneSummary = !observeResult.isEmpty() ? observeResult : "";
+                if (attempt < maxVisionAttempts) {
+                    continue;
                 }
-                storeSubTaskSummary(ctx, doneSummary);
-                return State.FINISH;
-            }
-            if ("FAIL".equals(cmd.op)) {
-                String reason = cmd.args.isEmpty() ? "" : String.join(" ", cmd.args);
-                ctx.error = "vision_fail:" + reason;
+                ctx.error = "vision_instruction_invalid_after_retries:" + parseError;
+                Map<String, Object> fail = new LinkedHashMap<>();
+                fail.put("task_id", ctx.taskId);
+                fail.put("state", State.VISION_ACT.name());
+                fail.put("error", parseError);
+                trace.event("vision_instruction_invalid", fail);
                 return State.FAIL;
             }
-            if (!execActionCommand(ctx, cmd)) {
+
+            // Command-arg strict validation before execution.
+            String commandArgError = validateVisionCommandArgs(commands.get(0));
+            if (!commandArgError.isEmpty()) {
+                retryReason = "vision_command_arg_error:" + commandArgError;
+                Map<String, Object> retryEv = new LinkedHashMap<>();
+                retryEv.put("task_id", ctx.taskId);
+                retryEv.put("state", State.VISION_ACT.name());
+                retryEv.put("phase", "command_args");
+                retryEv.put("attempt", attempt);
+                retryEv.put("max_attempts", maxVisionAttempts);
+                retryEv.put("reason", retryReason);
+                retryEv.put("command", commands.get(0).raw);
+                retryEv.put("retrying", attempt < maxVisionAttempts);
+                trace.event("vision_retry", retryEv);
+                if (attempt < maxVisionAttempts) {
+                    continue;
+                }
+                ctx.error = "vision_command_invalid_after_retries:" + commandArgError;
                 return State.FAIL;
             }
+
+            // Snapshot mutable context so retry does not pollute history/logs.
+            int llmHistorySizeBefore = ctx.llmHistory.size();
+            int visionHistorySizeBefore = ctx.visionHistory.size();
+            int commandLogSizeBefore = ctx.commandLog.size();
+            String pendingInstructionBefore = ctx.pendingHistoryInstruction;
+            String pendingExpectedBefore = ctx.pendingHistoryExpected;
+            String pendingCarryBefore = ctx.pendingHistoryCarryContext;
+            String lastCommandBefore = ctx.lastCommand;
+            int sameCommandStreakBefore = ctx.sameCommandStreak;
+
+            Map<String, Object> structured = new LinkedHashMap<>();
+            structured.put("Observing", observing);
+            structured.put("Ovserve_result", observeResult);
+            structured.put("Judging", judging);
+            structured.put("Judge_result", judgeResult);
+            structured.put("Thinking", thinking);
+            structured.put("action", actionText);
+            structured.put("expected", expectedText);
+            structured.put("carry_context", carryContextText);
+            structured.put("command", commandText);
+
+            Map<String, Object> hist = new LinkedHashMap<>();
+            hist.put("state", State.VISION_ACT.name());
+            hist.put("structured", structured);
+            hist.put("command", commandText);
+            ctx.llmHistory.add(hist);
+
+            Map<String, Object> stEv = new LinkedHashMap<>();
+            stEv.put("task_id", ctx.taskId);
+            stEv.put("state", State.VISION_ACT.name());
+            stEv.put("data", structured);
+            stEv.put("command", commandText);
+            trace.event("llm_structured_vision_act", stEv);
+
+            // External history maintenance:
+            // previous instruction/expected are matched with current actual/judgement.
+            if (!ctx.pendingHistoryInstruction.isEmpty()
+                    || !ctx.pendingHistoryExpected.isEmpty()
+                    || !ctx.pendingHistoryCarryContext.isEmpty()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("instruction", ctx.pendingHistoryInstruction);
+                row.put("expected", ctx.pendingHistoryExpected);
+                String actual = !observeResult.isEmpty() ? observeResult : observing;
+                row.put("actual", actual);
+                row.put("judgement", !judgeResult.isEmpty() ? judgeResult : "unknown");
+                row.put("carry_context", ctx.pendingHistoryCarryContext);
+                ctx.visionHistory.add(row);
+                while (ctx.visionHistory.size() > 8) {
+                    ctx.visionHistory.remove(0);
+                }
+
+                Map<String, Object> hEv = new LinkedHashMap<>();
+                hEv.put("task_id", ctx.taskId);
+                hEv.put("row", row);
+                hEv.put("history_size", ctx.visionHistory.size());
+                trace.event("vision_history_append", hEv);
+            }
+
+            // Stash next pair for history matching in next turn.
+            ctx.pendingHistoryInstruction = actionText != null ? actionText.trim() : "";
+            ctx.pendingHistoryExpected = expectedText != null ? expectedText.trim() : "";
+            ctx.pendingHistoryCarryContext = carryContextText;
+
+            Instruction cmd0 = commands.get(0);
+            String currentSig = cmd0.raw.trim();
+            if (!currentSig.isEmpty() && currentSig.equals(ctx.lastCommand)) {
+                ctx.sameCommandStreak += 1;
+            } else {
+                ctx.sameCommandStreak = 1;
+            }
+            ctx.lastCommand = currentSig;
+
+            if (ctx.sameCommandStreak >= 3 && ctx.sameActivityStreak >= 3) {
+                ctx.error = "vision_action_loop_detected:repeated_same_command";
+                Map<String, Object> fail = new LinkedHashMap<>();
+                fail.put("task_id", ctx.taskId);
+                fail.put("command", currentSig);
+                fail.put("same_command_streak", ctx.sameCommandStreak);
+                fail.put("same_activity_streak", ctx.sameActivityStreak);
+                trace.event("vision_action_loop_detected", fail);
+                return State.FAIL;
+            }
+
+            appendCommands(ctx, State.VISION_ACT, commands);
+
+            boolean retryAction = false;
+            for (Instruction cmd : commands) {
+                if ("DONE".equals(cmd.op)) {
+                    String doneSummary = cmd.args.isEmpty() ? "" : String.join(" ", cmd.args).trim();
+                    if (doneSummary.isEmpty()) {
+                        doneSummary = !observeResult.isEmpty() ? observeResult : "";
+                    }
+                    storeSubTaskSummary(ctx, doneSummary);
+                    return State.FINISH;
+                }
+                if ("FAIL".equals(cmd.op)) {
+                    String reason = cmd.args.isEmpty() ? "" : String.join(" ", cmd.args);
+                    ctx.error = "vision_fail:" + reason;
+                    return State.FAIL;
+                }
+                if (!execActionCommand(ctx, cmd)) {
+                    if (ctx.error == null || ctx.error.isEmpty()) {
+                        ctx.error = "vision_action_exec_failed:" + cmd.op;
+                    }
+                    retryReason = ctx.error;
+                    if (attempt < maxVisionAttempts) {
+                        retryAction = true;
+                        Map<String, Object> retryEv = new LinkedHashMap<>();
+                        retryEv.put("task_id", ctx.taskId);
+                        retryEv.put("state", State.VISION_ACT.name());
+                        retryEv.put("phase", "action_exec");
+                        retryEv.put("attempt", attempt);
+                        retryEv.put("max_attempts", maxVisionAttempts);
+                        retryEv.put("reason", retryReason);
+                        retryEv.put("command", cmd.raw);
+                        retryEv.put("retrying", true);
+                        trace.event("vision_retry", retryEv);
+                        break;
+                    }
+                    return State.FAIL;
+                }
+            }
+
+            if (retryAction) {
+                while (ctx.llmHistory.size() > llmHistorySizeBefore) {
+                    ctx.llmHistory.remove(ctx.llmHistory.size() - 1);
+                }
+                while (ctx.visionHistory.size() > visionHistorySizeBefore) {
+                    ctx.visionHistory.remove(ctx.visionHistory.size() - 1);
+                }
+                while (ctx.commandLog.size() > commandLogSizeBefore) {
+                    ctx.commandLog.remove(ctx.commandLog.size() - 1);
+                }
+                ctx.pendingHistoryInstruction = pendingInstructionBefore;
+                ctx.pendingHistoryExpected = pendingExpectedBefore;
+                ctx.pendingHistoryCarryContext = pendingCarryBefore;
+                ctx.lastCommand = lastCommandBefore;
+                ctx.sameCommandStreak = sameCommandStreakBefore;
+                ctx.error = "";
+                continue;
+            }
+
+            return State.VISION_ACT;
         }
 
-        return State.VISION_ACT;
+        ctx.error = "vision_retry_exhausted";
+        return State.FAIL;
     }
 
     private boolean tryFastSkipSplashAd(Context ctx) {
@@ -3242,6 +3332,12 @@ public class CortexFsmEngine {
                 trace.event("exec_swipe_start", ev);
                 execution.handleSwipe(buf.array());
                 trace.event("exec_swipe_done", ev);
+                Map<String, Object> waitEv = new LinkedHashMap<>();
+                waitEv.put("task_id", ctx.taskId);
+                waitEv.put("op", "SWIPE");
+                waitEv.put("wait_ms", SWIPE_POST_WAIT_MS);
+                trace.event("exec_swipe_post_wait", waitEv);
+                sleepQuiet(SWIPE_POST_WAIT_MS);
                 return waitForUiStableByDumpActions(ctx, "SWIPE");
             }
             if ("INPUT".equals(cmd.op)) {
@@ -3349,6 +3445,83 @@ public class CortexFsmEngine {
         return VISION_MAX_TURNS_SINGLE;
     }
 
+    private String validateVisionCommandArgs(Instruction cmd) {
+        if (cmd == null) {
+            return "empty command";
+        }
+        if ("TAP".equals(cmd.op)) {
+            if (cmd.args.size() != 2) {
+                return "TAP expects 2 args";
+            }
+            Integer x = parseStrictIntToken(cmd.args.get(0));
+            Integer y = parseStrictIntToken(cmd.args.get(1));
+            if (x == null || y == null) {
+                return "TAP args must be digits-only integers";
+            }
+            if (x < 0 || x > 1000 || y < 0 || y > 1000) {
+                return "TAP args out of range [0,1000]";
+            }
+            return "";
+        }
+        if ("SWIPE".equals(cmd.op)) {
+            if (cmd.args.size() != 5) {
+                return "SWIPE expects 5 args";
+            }
+            Integer x1 = parseStrictIntToken(cmd.args.get(0));
+            Integer y1 = parseStrictIntToken(cmd.args.get(1));
+            Integer x2 = parseStrictIntToken(cmd.args.get(2));
+            Integer y2 = parseStrictIntToken(cmd.args.get(3));
+            Integer dur = parseStrictIntToken(cmd.args.get(4));
+            if (x1 == null || y1 == null || x2 == null || y2 == null || dur == null) {
+                return "SWIPE args must be digits-only integers";
+            }
+            if (x1 < 0 || x1 > 1000 || y1 < 0 || y1 > 1000
+                    || x2 < 0 || x2 > 1000 || y2 < 0 || y2 > 1000) {
+                return "SWIPE coordinates out of range [0,1000]";
+            }
+            if (dur <= 0 || dur > 10000) {
+                return "SWIPE duration_ms out of range (1..10000)";
+            }
+            return "";
+        }
+        if ("WAIT".equals(cmd.op)) {
+            if (cmd.args.size() != 1) {
+                return "WAIT expects 1 arg";
+            }
+            Integer ms = parseStrictIntToken(cmd.args.get(0));
+            if (ms == null) {
+                return "WAIT arg must be digits-only integer";
+            }
+            if (ms < 0 || ms > 120000) {
+                return "WAIT ms out of range (0..120000)";
+            }
+            return "";
+        }
+        // INPUT/BACK/DONE/FAIL do not require strict numeric checks here.
+        return "";
+    }
+
+    private Integer parseStrictIntToken(String token) {
+        if (token == null) {
+            return null;
+        }
+        String s = token.trim();
+        if (s.isEmpty()) {
+            return null;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return null;
+            }
+        }
+        try {
+            return Integer.parseInt(s);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private String resolveCurrentSubTaskMode(Context ctx) {
         String mode = "";
         if (ctx != null && ctx.currentSubTask != null && ctx.currentSubTask.mode != null) {
@@ -3364,12 +3537,16 @@ public class CortexFsmEngine {
         Map<String, Object> begin = new LinkedHashMap<>();
         begin.put("task_id", ctx.taskId);
         begin.put("op", op);
+        begin.put("pre_wait_ms", UI_SETTLE_PRE_WAIT_MS);
         begin.put("timeout_ms", UI_SETTLE_TIMEOUT_MS);
         begin.put("sample_ms", UI_SETTLE_SAMPLE_MS);
         begin.put("sim_threshold", UI_SETTLE_SIM_THRESHOLD);
         trace.event("vision_settle_begin", begin);
 
         try {
+            // Always wait a bit before starting stability sampling.
+            // This improves reliability on pages with inertial motion / delayed rendering.
+            sleepQuiet(UI_SETTLE_PRE_WAIT_MS);
             DumpSnapshot prev = captureDumpActionsSnapshot();
             if (!prev.valid) {
                 Map<String, Object> ev = new LinkedHashMap<>();
@@ -3619,10 +3796,27 @@ public class CortexFsmEngine {
         sb.append("4) WAIT ms: wait for UI/network transition.\n");
         sb.append("5) BACK: press Android back once.\n");
         sb.append("6) DONE summary_text: terminate current objective with concise summary.\n");
+        sb.append("Coordinate convention (required for TAP/SWIPE):\n");
+        sb.append("- Use normalized coordinates in a 1000x1000 logical plane.\n");
+        sb.append("- Top-left is (0,0); bottom-right is (1000,1000).\n");
+        sb.append("- All TAP/SWIPE coordinates should be integers in [0,1000].\n");
+        sb.append("- Do NOT output device pixel coordinates.\n");
+        sb.append("- Numeric tokens must be pure digits only (0-9), with no comma, no period, no unit, no parentheses.\n");
+        sb.append("- Use ASCII half-width spaces to separate tokens.\n");
+        sb.append("- Valid examples: TAP 373 947 ; SWIPE 500 820 500 220 450\n");
+        sb.append("- Invalid examples: TAP 373, 947 ; TAP (373,947) ; SWIPE 500 820 500 220 450ms\n");
         sb.append("Constraints:\n");
         sb.append("- One turn chooses one primary action.\n");
+        sb.append("- Do not BACK immediately just because one expected control is not visible.\n");
+        sb.append("- If UI seems to be the expected page but target control is missing, first use SWIPE to explore more of the same page.\n");
+        sb.append("- Before BACK in such cases, try 1-3 SWIPEs (typically upward to reveal lower content; if already at bottom, try downward).\n");
+        sb.append("- Only BACK after swipe-based exploration still cannot find expected control.\n");
         sb.append("- If repeated no progress, change action type/intent.\n");
         sb.append("- Prefer safe, incremental exploration before failure.\n\n");
+
+        sb.append("SWIPE timing examples:\n");
+        sb.append("- Example A: expected \"My Courses\" after tapping \"More\", but not visible yet -> SWIPE up to scan page; do not BACK first.\n");
+        sb.append("- Example B: entered settings-like page and expected section not on screen -> SWIPE to continue searching, then decide BACK only if still absent.\n\n");
 
         sb.append("[PASSED_CONTEXT_BLOCK]\n");
         if (ctx.blackboard.isEmpty()) {
@@ -3726,6 +3920,17 @@ public class CortexFsmEngine {
         sb.append("- <expected>: expected result after next action.\n");
         sb.append("- <carry_context>: concise durable notes needed in later turns (for example question stem/options/key constraints). Use 'none' if nothing to carry.\n");
         sb.append("- <command>: executable command string.\n");
+        sb.append("Command format strictness:\n");
+        sb.append("- <command> must contain exactly one command line and nothing else.\n");
+        sb.append("- Allowed command signatures only:\n");
+        sb.append("  TAP x y\n");
+        sb.append("  SWIPE x1 y1 x2 y2 duration_ms\n");
+        sb.append("  INPUT \"text\"\n");
+        sb.append("  WAIT ms\n");
+        sb.append("  BACK\n");
+        sb.append("  DONE summary_text\n");
+        sb.append("  FAIL reason_text\n");
+        sb.append("- Before output, self-check that numeric args are digits-only tokens with no punctuation.\n");
         sb.append("Special first-turn rule:\n");
         sb.append("- If there is no previous action/history, output:\n");
         sb.append("  <Judging>none</Judging>\n");
@@ -3740,23 +3945,43 @@ public class CortexFsmEngine {
      * Java port of Python _map_point_by_probe.
      */
     private int[] mapPointByProbe(Context ctx, double xf, double yf) {
-        int w = (int) (ctx.deviceInfo.getOrDefault("width", 0));
-        int h = (int) (ctx.deviceInfo.getOrDefault("height", 0));
+        int w = parseIntLike(ctx.deviceInfo.get("width"), 0);
+        int h = parseIntLike(ctx.deviceInfo.get("height"), 0);
         Map<String, Object> probe = ctx.coordProbe;
-        double maxX = toDouble(probe.get("max_x"));
-        double maxY = toDouble(probe.get("max_y"));
-
-        if (w <= 1 || h <= 1 || maxX <= 0.0 || maxY <= 0.0) {
+        if (w <= 1 || h <= 1) {
             int rx = (int) Math.round(xf);
             int ry = (int) Math.round(yf);
             return new int[]{rx, ry};
         }
 
-        // If looks like absolute screen coordinates that exceed model range, bypass scaling.
+        // Preferred mode: normalized coordinate space [0, 1000].
+        if (xf >= 0.0d && xf <= 1000.0d && yf >= 0.0d && yf <= 1000.0d) {
+            int rx = (int) Math.round((xf / 1000.0d) * (double) (w - 1));
+            int ry = (int) Math.round((yf / 1000.0d) * (double) (h - 1));
+            rx = Math.max(0, Math.min(w - 1, rx));
+            ry = Math.max(0, Math.min(h - 1, ry));
+            return new int[]{rx, ry};
+        }
+
+        // Compatibility fallback for legacy outputs:
+        // keep old probe-based mapping if values are outside [0,1000].
+        double maxX = toDouble(probe.get("max_x"));
+        double maxY = toDouble(probe.get("max_y"));
+        if (maxX <= 0.0d || maxY <= 0.0d) {
+            int rx = (int) Math.round(xf);
+            int ry = (int) Math.round(yf);
+            rx = Math.max(0, Math.min(w - 1, rx));
+            ry = Math.max(0, Math.min(h - 1, ry));
+            return new int[]{rx, ry};
+        }
+
+        // If looks like absolute screen coordinates that exceed probe range, bypass scaling.
         if (xf >= 0.0 && xf <= (double) (w - 1) && yf >= 0.0 && yf <= (double) (h - 1)) {
             if (xf > maxX * 1.2 || yf > maxY * 1.2) {
                 int rx = (int) Math.round(xf);
                 int ry = (int) Math.round(yf);
+                rx = Math.max(0, Math.min(w - 1, rx));
+                ry = Math.max(0, Math.min(h - 1, ry));
                 return new int[]{rx, ry};
             }
         }
