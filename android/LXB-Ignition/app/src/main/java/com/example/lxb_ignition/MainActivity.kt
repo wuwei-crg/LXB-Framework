@@ -34,8 +34,11 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -83,12 +86,30 @@ class MainActivity : ComponentActivity() {
 fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     val uiLang by viewModel.uiLang.collectAsState()
+    val appUpdateResult by viewModel.appUpdateResult.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
     val i18n = remember(uiLang) { UiI18n(uiLang) }
+
+    LaunchedEffect(appUpdateResult) {
+        if (appUpdateResult.isNotBlank()) {
+            snackbarHostState.showSnackbar(appUpdateResult)
+        }
+    }
 
     CompositionLocalProvider(LocalUiI18n provides i18n) {
         val tabs = listOf("Control", "Tasks", "Config", "Logs")
         Scaffold(
-            topBar = { TopAppBar(title = { Text(tr("LXB Ignition")) }) },
+            topBar = {
+                TopAppBar(
+                    title = { Text("${tr("LXB Ignition")} v${BuildConfig.VERSION_NAME}") },
+                    actions = {
+                        TextButton(onClick = { viewModel.checkAppUpdateFromGithub() }) {
+                            Text(tr("Check update"), fontSize = 12.sp)
+                        }
+                    }
+                )
+            },
+            snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             bottomBar = {
                 NavigationBar {
                     tabs.forEachIndexed { index, rawLabel ->
@@ -221,6 +242,8 @@ private fun tr(text: String): String = LocalUiI18n.current.tr(text)
 
 private val ZhMap = mapOf(
     "LXB Ignition" to "LXB 点火",
+    "Update" to "更新",
+    "Check update" to "检查更新",
     "Control" to "控制",
     "Tasks" to "任务",
     "Config" to "配置",
@@ -1533,7 +1556,6 @@ fun SingleConfigPage(
 @Composable
 fun LxbCoreConfigCard(viewModel: MainViewModel) {
     val lxbPort by viewModel.lxbPort.collectAsState()
-    val appUpdateResult by viewModel.appUpdateResult.collectAsState()
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -1556,38 +1578,6 @@ fun LxbCoreConfigCard(viewModel: MainViewModel) {
                     )
                 }
             )
-            Text(tr("App update"), style = MaterialTheme.typography.titleSmall)
-            Text(
-                tr("Check and open latest GitHub release APK."),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                fontSize = 12.sp
-            )
-            Text(
-                "${tr("Current app version")}: ${BuildConfig.VERSION_NAME}",
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
-                fontSize = 12.sp
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { viewModel.checkAppUpdateFromGithub() },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(tr("Check latest release"))
-                }
-                OutlinedButton(
-                    onClick = { viewModel.openLatestReleasePage() },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(tr("Open releases"))
-                }
-            }
-            if (appUpdateResult.isNotBlank()) {
-                Text(
-                    text = appUpdateResult,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
-                )
-            }
         }
     }
 }
