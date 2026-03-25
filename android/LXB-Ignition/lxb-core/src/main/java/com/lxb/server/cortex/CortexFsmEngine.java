@@ -103,11 +103,14 @@ public class CortexFsmEngine {
         public boolean currentSubTaskIsLast = false;
 
         // External semantic history (maintained by host, not by model memory).
-        // Each row contains: instruction, expected, actual, judgement, carry_context.
+        // Each row contains:
+        // instruction, expected, actual, judgement_prev, judgement_global, carry_context.
         public final List<Map<String, Object>> visionHistory = new ArrayList<>();
         public String pendingHistoryInstruction = "";
         public String pendingHistoryExpected = "";
         public String pendingHistoryCarryContext = "";
+        // Durable memory written by model across turns for long-context tasks.
+        public final List<String> workingMemory = new ArrayList<>();
 
         // Optional guidance injected by TaskManager.
         public String userPlaybook = "";
@@ -394,6 +397,7 @@ public class CortexFsmEngine {
                 ctx.pendingHistoryInstruction = "";
                 ctx.pendingHistoryExpected = "";
                 ctx.pendingHistoryCarryContext = "";
+                ctx.workingMemory.clear();
 
                 // Select package:
                 // - caller-provided package has highest priority.
@@ -782,6 +786,38 @@ public class CortexFsmEngine {
             out = out.substring(0, 1200).trim();
         }
         return out;
+    }
+
+    private static String normalizeMemoryWrite(String s) {
+        if (s == null) {
+            return "";
+        }
+        String out = s.trim().replaceAll("[\\t\\r\\n]+", " ").replaceAll(" +", " ");
+        if (out.isEmpty()) {
+            return "";
+        }
+        String lower = out.toLowerCase(Locale.ROOT);
+        if ("none".equals(lower) || "n/a".equals(lower) || "na".equals(lower) || "null".equals(lower)) {
+            return "";
+        }
+        if (out.length() > 300) {
+            out = out.substring(0, 300).trim();
+        }
+        return out;
+    }
+
+    private static void appendWorkingMemory(Context ctx, String memoryWrite) {
+        String s = normalizeMemoryWrite(memoryWrite);
+        if (s.isEmpty()) {
+            return;
+        }
+        if (ctx.workingMemory.contains(s)) {
+            return;
+        }
+        ctx.workingMemory.add(s);
+        while (ctx.workingMemory.size() > 20) {
+            ctx.workingMemory.remove(0);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -1358,13 +1394,21 @@ public class CortexFsmEngine {
         if (text == null || text.isEmpty() || tag == null || tag.isEmpty()) {
             return "";
         }
-        String pattern = "<" + tag + ">\\s*([\\s\\S]*?)\\s*</" + tag + ">";
-        Pattern p = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
-        Matcher m = p.matcher(text);
-        if (!m.find()) {
-            return "";
+        String safeTag = Pattern.quote(tag);
+        // Preferred: strict paired tags.
+        String strict = "(?is)<\\s*" + safeTag + "\\s*>\\s*([\\s\\S]*?)\\s*</\\s*" + safeTag + "\\s*>";
+        Matcher m = Pattern.compile(strict, Pattern.CASE_INSENSITIVE).matcher(text);
+        if (m.find()) {
+            return m.group(1).trim();
         }
-        return m.group(1).trim();
+        // Fallback: opening tag exists but closing tag is missing.
+        // Capture until next sibling opening tag or end of text.
+        String openOnly = "(?is)<\\s*" + safeTag + "\\s*>\\s*([\\s\\S]*?)(?=<\\s*[A-Za-z_][A-Za-z0-9_]*\\s*>|$)";
+        Matcher m2 = Pattern.compile(openOnly, Pattern.CASE_INSENSITIVE).matcher(text);
+        if (m2.find()) {
+            return m2.group(1).trim();
+        }
+        return "";
     }
 
     /**
@@ -1398,15 +1442,6 @@ public class CortexFsmEngine {
             String target = stringOrEmpty(obj.get("target_page"));
             if (!pkg.isEmpty() && !target.isEmpty()) {
                 return "ROUTE " + pkg + " " + target;
-            }
-        }
-        if (state == State.VISION_ACT) {
-            String action = stringOrEmpty(obj.get("action")).toUpperCase();
-            if ("DONE".equals(action)) {
-                return "DONE";
-            }
-            if ("BACK".equals(action)) {
-                return "BACK";
             }
         }
         return text;
@@ -3333,12 +3368,15 @@ public class CortexFsmEngine {
             String normalized = "";
             String observing = "";
             String observeResult = "";
-            String judging = "";
-            String judgeResult = "";
+            String judgingPrev = "";
+            String judgePrevResult = "";
+            String judgingGlobal = "";
+            String judgeGlobalResult = "";
             String thinking = "";
             String actionText = "";
             String expectedText = "";
             String carryContextText = "";
+            String memoryWriteText = "";
             String commandText = "";
             List<Instruction> commands;
 
@@ -3347,7 +3385,7 @@ public class CortexFsmEngine {
                 StringBuilder retryPrompt = new StringBuilder(prompt);
                 retryPrompt.append("\n\n[RETRY_CONTEXT]\n");
                 retryPrompt.append("Previous attempt failed. reason: ").append(retryReason).append("\n");
-                retryPrompt.append("Fix the output and return exactly the required 9 tags in order.\n");
+                retryPrompt.append("Fix the output and return exactly the required 12 tags in order.\n");
                 retryPrompt.append("In <command>, output one valid command line with strict argument format.\n");
                 attemptPrompt = retryPrompt.toString();
             }
@@ -3398,12 +3436,27 @@ public class CortexFsmEngine {
                 // Parse the agreed regex-friendly output tags.
                 observing = extractTagText(raw, "Observing");
                 observeResult = extractTagText(raw, "Ovserve_result");
-                judging = extractTagText(raw, "Judging");
-                judgeResult = extractTagText(raw, "Judge_result");
+                judgingPrev = extractTagText(raw, "Judging_prev");
+                if (judgingPrev.isEmpty()) {
+                    judgingPrev = extractTagText(raw, "Judging");
+                }
+                judgePrevResult = extractTagText(raw, "Judge_prev_result");
+                if (judgePrevResult.isEmpty()) {
+                    judgePrevResult = extractTagText(raw, "Judge_result");
+                }
+                judgingGlobal = extractTagText(raw, "Judging_global");
+                if (judgingGlobal.isEmpty()) {
+                    judgingGlobal = judgingPrev;
+                }
+                judgeGlobalResult = extractTagText(raw, "Judge_global_result");
+                if (judgeGlobalResult.isEmpty()) {
+                    judgeGlobalResult = judgePrevResult;
+                }
                 thinking = extractTagText(raw, "Thinking");
                 actionText = extractTagText(raw, "action");
                 expectedText = extractTagText(raw, "expected");
                 carryContextText = normalizeCarryContext(extractTagText(raw, "carry_context"));
+                memoryWriteText = normalizeMemoryWrite(extractTagText(raw, "memory_write"));
                 commandText = extractTagText(raw, "command");
 
                 // Backward compatibility: if <command> is missing, try old extractor.
@@ -3476,18 +3529,22 @@ public class CortexFsmEngine {
             String pendingInstructionBefore = ctx.pendingHistoryInstruction;
             String pendingExpectedBefore = ctx.pendingHistoryExpected;
             String pendingCarryBefore = ctx.pendingHistoryCarryContext;
+            int workingMemorySizeBefore = ctx.workingMemory.size();
             String lastCommandBefore = ctx.lastCommand;
             int sameCommandStreakBefore = ctx.sameCommandStreak;
 
             Map<String, Object> structured = new LinkedHashMap<>();
             structured.put("Observing", observing);
             structured.put("Ovserve_result", observeResult);
-            structured.put("Judging", judging);
-            structured.put("Judge_result", judgeResult);
+            structured.put("Judging_prev", judgingPrev);
+            structured.put("Judge_prev_result", judgePrevResult);
+            structured.put("Judging_global", judgingGlobal);
+            structured.put("Judge_global_result", judgeGlobalResult);
             structured.put("Thinking", thinking);
             structured.put("action", actionText);
             structured.put("expected", expectedText);
             structured.put("carry_context", carryContextText);
+            structured.put("memory_write", memoryWriteText);
             structured.put("command", commandText);
 
             Map<String, Object> hist = new LinkedHashMap<>();
@@ -3513,10 +3570,15 @@ public class CortexFsmEngine {
                 row.put("expected", ctx.pendingHistoryExpected);
                 String actual = !observeResult.isEmpty() ? observeResult : observing;
                 row.put("actual", actual);
-                row.put("judgement", !judgeResult.isEmpty() ? judgeResult : "unknown");
+                String jp = !judgePrevResult.isEmpty() ? judgePrevResult : "unknown";
+                String jg = !judgeGlobalResult.isEmpty() ? judgeGlobalResult : jp;
+                row.put("judgement_prev", jp);
+                row.put("judgement_global", jg);
+                // Keep legacy key for compatibility with old readers.
+                row.put("judgement", jp);
                 row.put("carry_context", ctx.pendingHistoryCarryContext);
                 ctx.visionHistory.add(row);
-                while (ctx.visionHistory.size() > 8) {
+                while (ctx.visionHistory.size() > 10) {
                     ctx.visionHistory.remove(0);
                 }
 
@@ -3526,6 +3588,8 @@ public class CortexFsmEngine {
                 hEv.put("history_size", ctx.visionHistory.size());
                 trace.event("vision_history_append", hEv);
             }
+
+            appendWorkingMemory(ctx, memoryWriteText);
 
             // Stash next pair for history matching in next turn.
             ctx.pendingHistoryInstruction = actionText != null ? actionText.trim() : "";
@@ -3616,6 +3680,9 @@ public class CortexFsmEngine {
                 }
                 while (ctx.commandLog.size() > commandLogSizeBefore) {
                     ctx.commandLog.remove(ctx.commandLog.size() - 1);
+                }
+                while (ctx.workingMemory.size() > workingMemorySizeBefore) {
+                    ctx.workingMemory.remove(ctx.workingMemory.size() - 1);
                 }
                 ctx.pendingHistoryInstruction = pendingInstructionBefore;
                 ctx.pendingHistoryExpected = pendingExpectedBefore;
@@ -4305,7 +4372,7 @@ public class CortexFsmEngine {
         sb.append("- single: finish once evidence of completion is present.\n");
         sb.append("- loop: continue until no pending target remains.\n\n");
 
-        sb.append("[HISTORY_BLOCK]\n");
+        sb.append("[RECENT_HISTORY_BLOCK]\n");
         String pendingInstruction = stringOrEmpty(ctx.pendingHistoryInstruction);
         String pendingExpected = stringOrEmpty(ctx.pendingHistoryExpected);
         String pendingCarryContext = stringOrEmpty(ctx.pendingHistoryCarryContext);
@@ -4321,21 +4388,38 @@ public class CortexFsmEngine {
                 sb.append(rowIndex++).append(") action: ").append(stringOrEmpty(row.get("instruction"))).append("\n");
                 sb.append("   expected: ").append(stringOrEmpty(row.get("expected"))).append("\n");
                 sb.append("   actual: ").append(stringOrEmpty(row.get("actual"))).append("\n");
-                sb.append("   judgement: ").append(stringOrEmpty(row.get("judgement"))).append("\n");
+                sb.append("   judge_prev: ").append(stringOrEmpty(row.get("judgement_prev"))).append("\n");
+                sb.append("   judge_global: ").append(stringOrEmpty(row.get("judgement_global"))).append("\n");
                 sb.append("   carry_context: ").append(stringOrEmpty(row.get("carry_context"))).append("\n");
             }
             if (hasPending) {
                 sb.append(rowIndex).append(") action: ").append(pendingInstruction).append("\n");
                 sb.append("   expected: ").append(pendingExpected).append("\n");
                 sb.append("   actual: pending - observe actual result in this turn\n");
-                sb.append("   judgement: pending - evaluate outcome in this turn\n");
+                sb.append("   judge_prev: pending - evaluate previous action outcome in this turn\n");
+                sb.append("   judge_global: pending - evaluate global progress in this turn\n");
                 sb.append("   carry_context: ").append(!pendingCarryContext.isEmpty() ? pendingCarryContext : "none").append("\n");
             }
         }
-        sb.append("History guidance:\n");
-        sb.append("- Treat carry_context as durable notes for details that may disappear after scroll/page switch.\n");
+        sb.append("Recent-history guidance:\n");
+        sb.append("- judge_prev checks only previous action vs previous expected result.\n");
+        sb.append("- judge_global checks whether the overall objective is converging or drifting.\n");
         sb.append("- Do not repeat actions that already failed with no_effect/wrong_target.\n");
         sb.append("- If repeated no progress, change action strategy.\n\n");
+
+        sb.append("[WORKING_MEMORY_BLOCK]\n");
+        if (ctx.workingMemory.isEmpty()) {
+            sb.append("Working memory: none\n");
+        } else {
+            sb.append("Durable facts from earlier turns (oldest -> newest):\n");
+            for (int i = 0; i < ctx.workingMemory.size(); i++) {
+                sb.append("- ").append(ctx.workingMemory.get(i)).append("\n");
+            }
+        }
+        sb.append("Working-memory guidance:\n");
+        sb.append("- Use this for stable facts needed across many turns (for example long text fragments, options, constraints).\n");
+        sb.append("- Do not copy volatile UI details into working memory.\n");
+        sb.append("- Write concise, reusable facts only.\n\n");
 
         sb.append("[ACTION_BLOCK]\n");
         sb.append("Available actions:\n");
@@ -4467,22 +4551,28 @@ public class CortexFsmEngine {
         sb.append("You MUST output exactly the following tags in this exact order:\n");
         sb.append("<Observing>...</Observing>\n");
         sb.append("<Ovserve_result>...</Ovserve_result>\n");
-        sb.append("<Judging>...</Judging>\n");
-        sb.append("<Judge_result>...</Judge_result>\n");
+        sb.append("<Judging_prev>...</Judging_prev>\n");
+        sb.append("<Judge_prev_result>...</Judge_prev_result>\n");
+        sb.append("<Judging_global>...</Judging_global>\n");
+        sb.append("<Judge_global_result>...</Judge_global_result>\n");
         sb.append("<Thinking>...</Thinking>\n");
         sb.append("<action>...</action>\n");
         sb.append("<expected>...</expected>\n");
         sb.append("<carry_context>...</carry_context>\n");
+        sb.append("<memory_write>...</memory_write>\n");
         sb.append("<command>...</command>\n");
         sb.append("Field meaning:\n");
         sb.append("- <Observing>: describe what is currently visible and relevant to the current objective.\n");
         sb.append("- <Ovserve_result>: one-sentence summary of current page/result; used as actual outcome.\n");
-        sb.append("- <Judging>: evaluate previous action vs previous expected result; explain mismatch cause if any.\n");
-        sb.append("- <Judge_result>: one-sentence judgement for previous action.\n");
+        sb.append("- <Judging_prev>: evaluate previous action vs previous expected result; explain mismatch cause if any.\n");
+        sb.append("- <Judge_prev_result>: one-sentence verdict for previous action (match/mismatch and why).\n");
+        sb.append("- <Judging_global>: evaluate global progress toward current objective; detect drift/repetition/unfinished key requirements.\n");
+        sb.append("- <Judge_global_result>: one-sentence verdict for global progress (on_track/stuck/drifting and why).\n");
         sb.append("- <Thinking>: analyze current situation and decide next strategy.\n");
         sb.append("- <action>: one short natural-language next action intent.\n");
         sb.append("- <expected>: expected result after next action.\n");
-        sb.append("- <carry_context>: concise durable notes needed in later turns (for example question stem/options/key constraints). Use 'none' if nothing to carry.\n");
+        sb.append("- <carry_context>: short-term notes for immediate next turns; use 'none' if not needed.\n");
+        sb.append("- <memory_write>: one durable fact to store for later turns (long-context tasks); use 'none' if no new durable fact.\n");
         sb.append("- <command>: executable command string.\n");
         sb.append("Command format strictness:\n");
         sb.append("- <command> must contain exactly one command line and nothing else.\n");
@@ -4497,8 +4587,11 @@ public class CortexFsmEngine {
         sb.append("- Before output, self-check that numeric args are digits-only tokens with no punctuation.\n");
         sb.append("Special first-turn rule:\n");
         sb.append("- If there is no previous action/history, output:\n");
-        sb.append("  <Judging>none</Judging>\n");
-        sb.append("  <Judge_result>none</Judge_result>\n");
+        sb.append("  <Judging_prev>none</Judging_prev>\n");
+        sb.append("  <Judge_prev_result>none</Judge_prev_result>\n");
+        sb.append("- If global progress cannot be judged yet, output:\n");
+        sb.append("  <Judging_global>none</Judging_global>\n");
+        sb.append("  <Judge_global_result>none</Judge_global_result>\n");
         sb.append("Do not output markdown, code fences, JSON, or any extra text outside these tags.\n");
 
         return sb.toString();
