@@ -67,7 +67,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.lxb_ignition.shizuku.ShizukuManager
 import com.example.lxb_ignition.ui.theme.LXBIgnitionTheme
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -168,7 +167,6 @@ fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
 @Composable
 fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val coreRuntime by viewModel.coreRuntimeStatus.collectAsState()
-    val shizukuState by viewModel.state.collectAsState()
     val wireless by viewModel.wirelessBootstrapStatus.collectAsState()
     val requirement by viewModel.requirement.collectAsState()
     val chatMessages by viewModel.chatMessages.collectAsState()
@@ -192,10 +190,7 @@ fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
         ProcessControlRow(
             coreReady = coreRuntime.ready,
-            shizukuState = shizukuState,
-            onRequestPermission = { viewModel.requestShizukuPermission() },
             onStartNative = { viewModel.startServerWithNative() },
-            onStartShizuku = { viewModel.startServerWithShizuku() },
             onStop = { viewModel.stopServerProcess() },
             onRefreshState = { viewModel.refreshCoreRuntimeStatusNow() }
         )
@@ -313,14 +308,12 @@ private val ZhMap = mapOf(
     "Hour" to "小时",
     "Minute" to "分钟",
     "OK" to "确定",
-    "Grant Shizuku" to "授予 Shizuku 权限",
     "Core Connected" to "Core 已连接",
     "Core Disconnected" to "Core 未连接",
     "Start Native" to "原生启动",
-    "Start Shizuku" to "Shizuku 启动",
     "Refresh Core State" to "刷新 Core 状态",
     "Wireless bootstrap" to "无线 ADB 引导",
-    "Shizuku-free bootstrap path (M1). Start guide, then submit pairing code from notification." to "无 Shizuku 引导路径（M1）。点击开始引导后，在通知栏仅输入配对码。",
+    "Wireless ADB bootstrap path (native). Start guide, then submit pairing code from notification." to "无线 ADB 引导路径（原生）。点击开始引导后，在通知栏仅输入配对码。",
     "Open Developer Options (Start Guide)" to "打开开发者选项（开始引导）",
     "State" to "状态",
     "Start" to "启动",
@@ -332,8 +325,6 @@ private val ZhMap = mapOf(
     "Chinese" to "中文",
     "Device core server" to "设备端核心服务",
     "TCP port and related options for lxb-core running on this device." to "配置设备端 lxb-core 的 TCP 端口与相关选项。",
-    "PC web_console" to "PC 调试控制台",
-    "IP/port for optional PC-side web_console debugging." to "可选：配置 PC 端 web_console 调试地址。",
     "LLM config (device-side)" to "设备端 LLM 配置",
     "Base URL, API key and model for device-side LLM/VLM calls." to "配置设备端 LLM/VLM 调用的 Base URL、API Key 与模型。",
     "Unlock & lock policy" to "解锁与锁屏策略",
@@ -348,10 +339,6 @@ private val ZhMap = mapOf(
     "lxb-core server" to "lxb-core 服务",
     "TCP port" to "TCP 端口",
     "TCP port listened by lxb-core on device (default 12345)" to "设备端 lxb-core 监听的 TCP 端口（默认 12345）",
-    "Server IP" to "服务器 IP",
-    "IP address of the PC running web_console" to "运行 web_console 的 PC IP 地址",
-    "Server port" to "服务器端口",
-    "Flask port of web_console (default 5000)" to "web_console 的 Flask 端口（默认 5000）",
     "API Base URL" to "API Base URL",
     "API Key" to "API Key",
     "Model" to "模型",
@@ -1275,10 +1262,7 @@ fun ProcessRuntimeCard(status: MainViewModel.CoreRuntimeStatus) {
 @Composable
 fun ProcessControlRow(
     coreReady: Boolean,
-    shizukuState: ShizukuManager.State,
-    onRequestPermission: () -> Unit,
     onStartNative: () -> Unit,
-    onStartShizuku: () -> Unit,
     onStop: () -> Unit,
     onRefreshState: () -> Unit
 ) {
@@ -1286,21 +1270,6 @@ fun ProcessControlRow(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        if (shizukuState == ShizukuManager.State.PERMISSION_DENIED) {
-            Button(
-                onClick = onRequestPermission,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(36.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 8.dp,
-                    vertical = 4.dp
-                ),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
-            ) {
-                Text(tr("Grant Shizuku"))
-            }
-        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1317,19 +1286,6 @@ fun ProcessControlRow(
                 )
             ) {
                 Text(tr("Start Native"), fontSize = 12.sp)
-            }
-            OutlinedButton(
-                onClick = onStartShizuku,
-                enabled = !coreReady && shizukuState != ShizukuManager.State.UNAVAILABLE,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(36.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 8.dp,
-                    vertical = 4.dp
-                )
-            ) {
-                Text(tr("Start Shizuku"), fontSize = 12.sp)
             }
             OutlinedButton(
                 onClick = onStop,
@@ -1372,7 +1328,7 @@ fun WirelessBootstrapCard(
         ) {
             Text(tr("Wireless bootstrap"), style = MaterialTheme.typography.titleSmall)
             Text(
-                tr("Shizuku-free bootstrap path (M1). Start guide, then submit pairing code from notification."),
+                tr("Wireless ADB bootstrap path (native). Start guide, then submit pairing code from notification."),
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
                 fontSize = 12.sp
             )
@@ -1397,7 +1353,7 @@ fun WirelessBootstrapCard(
 @Composable
 fun ConfigTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     // simple in-tab navigation:
-    // 0 = overview, 1 = device core server, 2 = PC web_console, 3 = LLM, 4 = unlock policy
+    // 0 = overview, 1 = device core server, 2 = LLM, 3 = unlock policy, 4 = map sync
     var page by rememberSaveable { mutableIntStateOf(0) }
 
     when (page) {
@@ -1405,10 +1361,9 @@ fun ConfigTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             modifier = modifier,
             viewModel = viewModel,
             onOpenDeviceCore = { page = 1 },
-            onOpenPcConsole = { page = 2 },
-            onOpenLlm = { page = 3 },
-            onOpenUnlockPolicy = { page = 4 },
-            onOpenMapSync = { page = 5 }
+            onOpenLlm = { page = 2 },
+            onOpenUnlockPolicy = { page = 3 },
+            onOpenMapSync = { page = 4 }
         )
         1 -> SingleConfigPage(
             title = tr("Device core server"),
@@ -1418,27 +1373,20 @@ fun ConfigTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             LxbCoreConfigCard(viewModel)
         }
         2 -> SingleConfigPage(
-            title = tr("PC web_console"),
-            modifier = modifier,
-            onBack = { page = 0 }
-        ) {
-            PcConsoleConfigCard(viewModel)
-        }
-        3 -> SingleConfigPage(
             title = tr("LLM config (device-side)"),
             modifier = modifier,
             onBack = { page = 0 }
         ) {
             LlmConfigCard(viewModel)
         }
-        4 -> SingleConfigPage(
+        3 -> SingleConfigPage(
             title = tr("Unlock & lock policy"),
             modifier = modifier,
             onBack = { page = 0 }
         ) {
             UnlockPolicyConfigCard(viewModel)
         }
-        5 -> SingleConfigPage(
+        4 -> SingleConfigPage(
             title = tr("Map sync & source"),
             modifier = modifier,
             onBack = { page = 0 }
@@ -1510,7 +1458,6 @@ fun ConfigOverviewPage(
     modifier: Modifier = Modifier,
     viewModel: MainViewModel,
     onOpenDeviceCore: () -> Unit,
-    onOpenPcConsole: () -> Unit,
     onOpenLlm: () -> Unit,
     onOpenUnlockPolicy: () -> Unit,
     onOpenMapSync: () -> Unit
@@ -1560,11 +1507,6 @@ fun ConfigOverviewPage(
             title = tr("Device core server"),
             description = tr("TCP port and related options for lxb-core running on this device."),
             onClick = onOpenDeviceCore
-        )
-        ConfigEntryCard(
-            title = tr("PC web_console"),
-            description = tr("IP/port for optional PC-side web_console debugging."),
-            onClick = onOpenPcConsole
         )
         ConfigEntryCard(
             title = tr("LLM config (device-side)"),
@@ -1680,51 +1622,6 @@ fun LxbCoreConfigCard(viewModel: MainViewModel) {
                 supportingText = {
                     Text(
                         tr("TCP port listened by lxb-core on device (default 12345)"),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        fontSize = 12.sp
-                    )
-                }
-            )
-        }
-    }
-}
-
-@Composable
-fun PcConsoleConfigCard(viewModel: MainViewModel) {
-    val serverIp by viewModel.serverIp.collectAsState()
-    val serverPort by viewModel.serverPort.collectAsState()
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(tr("PC web_console"), style = MaterialTheme.typography.titleSmall)
-            OutlinedTextField(
-                value = serverIp,
-                onValueChange = { viewModel.serverIp.value = it },
-                label = { Text(tr("Server IP")) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                supportingText = {
-                    Text(
-                        tr("IP address of the PC running web_console"),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        fontSize = 12.sp
-                    )
-                }
-            )
-            OutlinedTextField(
-                value = serverPort,
-                onValueChange = { viewModel.serverPort.value = it },
-                label = { Text(tr("Server port")) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                supportingText = {
-                    Text(
-                        tr("Flask port of web_console (default 5000)"),
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         fontSize = 12.sp
                     )
