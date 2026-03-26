@@ -73,18 +73,22 @@ public class CortexFacade {
             byte[] gz = new byte[buf.remaining()];
             buf.get(gz);
             String json = gunzipToString(gz);
-            mapManager.setCurrentMap(pkg, json);
+            mapManager.setLaneMap("burn", pkg, json);
 
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("package", pkg);
             ev.put("bytes_gz", gz.length);
             ev.put("bytes_json", json.getBytes(StandardCharsets.UTF_8).length);
+            ev.put("source", "burn");
+            ev.put("lane_path", mapManager.getLaneMapFile("burn", pkg).getAbsolutePath());
             trace.event("map_set", ev);
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("ok", true);
             out.put("package", pkg);
-            out.put("path", mapManager.getCurrentMapFile(pkg).getAbsolutePath());
+            out.put("path", mapManager.getLaneMapFile("burn", pkg).getAbsolutePath());
+            out.put("lane_path", mapManager.getLaneMapFile("burn", pkg).getAbsolutePath());
+            out.put("source", "burn");
             out.put("size", json.length());
             return ok(Json.stringify(out));
         } catch (Exception e) {
@@ -100,10 +104,12 @@ public class CortexFacade {
         try {
             String pkg = new String(payload, StandardCharsets.UTF_8).trim();
             if (pkg.isEmpty()) return err("empty package");
-            File f = mapManager.getCurrentMapFile(pkg);
+            String mapSource = getConfiguredMapSourceOrDefault();
+            File f = mapManager.getMapFileForSource(pkg, mapSource);
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("ok", f.exists());
             out.put("package", pkg);
+            out.put("source", mapSource);
             out.put("path", f.getAbsolutePath());
             out.put("exists", f.exists());
             out.put("bytes", f.exists() ? f.length() : 0);
@@ -218,7 +224,7 @@ public class CortexFacade {
             if (pkg.isEmpty()) return err("package is required");
             if (userTask.isEmpty()) return err("user_task is required");
 
-            File mapFile = mapManager.getCurrentMapFile(pkg);
+            File mapFile = getConfiguredMapFile(pkg);
             if (!mapFile.exists()) {
                 return err("map file not found for package=" + pkg + ", path=" + mapFile.getAbsolutePath());
             }
@@ -773,7 +779,7 @@ public class CortexFacade {
                 return err("target_page is required");
             }
 
-            File mapFile = mapManager.getCurrentMapFile(pkg);
+            File mapFile = getConfiguredMapFile(pkg);
             if (!mapFile.exists()) {
                 return err("map file not found for package=" + pkg + ", path=" + mapFile.getAbsolutePath());
             }
@@ -1063,6 +1069,23 @@ public class CortexFacade {
         ev.put("to_page", to);
         ev.put("status", status);
         return ev;
+    }
+
+    private String getConfiguredMapSourceOrDefault() {
+        try {
+            LlmConfig cfg = LlmConfig.loadDefault();
+            String source = cfg.mapSource != null ? cfg.mapSource.trim() : "";
+            if ("candidate".equalsIgnoreCase(source) || "burn".equalsIgnoreCase(source)) {
+                return source.toLowerCase();
+            }
+            return "stable";
+        } catch (Exception ignored) {
+            return "stable";
+        }
+    }
+
+    private File getConfiguredMapFile(String pkg) {
+        return mapManager.getMapFileForSource(pkg, getConfiguredMapSourceOrDefault());
     }
 
     /**

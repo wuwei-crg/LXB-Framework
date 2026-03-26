@@ -121,6 +121,7 @@ public class CortexFsmEngine {
         public boolean autoLockAfterTask = true;
         public String unlockPin = "";
         public boolean useMap = true;
+        public String mapSource = "stable";
         public boolean unlockedByFsm = false;
 
         public Context(String taskId) {
@@ -331,6 +332,7 @@ public class CortexFsmEngine {
             Map<String, Object> useMapEv = new LinkedHashMap<>();
             useMapEv.put("task_id", ctx.taskId);
             useMapEv.put("use_map", ctx.useMap);
+            useMapEv.put("map_source", ctx.mapSource);
             useMapEv.put("source", "request_override");
             trace.event("fsm_use_map_policy", useMapEv);
         }
@@ -532,6 +534,7 @@ public class CortexFsmEngine {
             out.put("auto_unlock_before_route", ctx.autoUnlockBeforeRoute);
             out.put("auto_lock_after_task", ctx.autoLockAfterTask);
             out.put("use_map", ctx.useMap);
+            out.put("map_source", ctx.mapSource);
             out.put("unlocked_by_fsm", ctx.unlockedByFsm);
             if (ctx.error != null && !ctx.error.isEmpty()) {
                 out.put("reason", ctx.error);
@@ -1641,11 +1644,12 @@ public class CortexFsmEngine {
             noMapEv.put("package", pkg);
             noMapEv.put("reason", "use_map_disabled");
             noMapEv.put("use_map", false);
+            noMapEv.put("map_source", ctx.mapSource);
             trace.event("fsm_route_plan_no_map", noMapEv);
             return State.ROUTING;
         }
 
-        File mapFile = mapManager.getCurrentMapFile(pkg);
+        File mapFile = mapManager.getMapFileForSource(pkg, ctx.mapSource);
 
         // 2) No map for this package: keep pipeline, but mark as no-map mode.
         if (!mapFile.exists() || !mapFile.isFile() || mapFile.length() == 0) {
@@ -1653,6 +1657,7 @@ public class CortexFsmEngine {
             Map<String, Object> noMapEv = new LinkedHashMap<>();
             noMapEv.put("task_id", ctx.taskId);
             noMapEv.put("package", pkg);
+            noMapEv.put("map_source", ctx.mapSource);
             noMapEv.put("map_path", mapFile.getAbsolutePath());
             trace.event("fsm_route_plan_no_map", noMapEv);
             // No map available: continue to ROUTING, then fall through to VISION_ACT.
@@ -1669,6 +1674,7 @@ public class CortexFsmEngine {
             Map<String, Object> fail = new LinkedHashMap<>();
             fail.put("task_id", ctx.taskId);
             fail.put("package", pkg);
+            fail.put("map_source", ctx.mapSource);
             fail.put("map_path", mapFile.getAbsolutePath());
             fail.put("reason", ctx.error);
             trace.event("fsm_route_plan_map_load_failed", fail);
@@ -1692,6 +1698,7 @@ public class CortexFsmEngine {
             Map<String, Object> done = new LinkedHashMap<>();
             done.put("task_id", ctx.taskId);
             done.put("package", ctx.selectedPackage);
+            done.put("map_source", ctx.mapSource);
             done.put("target_page", targetPage);
             done.put("used_fallback", usedFallback);
             trace.event("fsm_route_plan_done", done);
@@ -1700,6 +1707,7 @@ public class CortexFsmEngine {
             Map<String, Object> fail = new LinkedHashMap<>();
             fail.put("task_id", ctx.taskId);
             fail.put("package", pkg);
+            fail.put("map_source", ctx.mapSource);
             fail.put("map_path", mapFile.getAbsolutePath());
             fail.put("reason", ctx.error);
             trace.event("fsm_route_plan_llm_error", fail);
@@ -1711,6 +1719,7 @@ public class CortexFsmEngine {
             Map<String, Object> fail = new LinkedHashMap<>();
             fail.put("task_id", ctx.taskId);
             fail.put("package", ctx.selectedPackage);
+            fail.put("map_source", ctx.mapSource);
             fail.put("map_path", ctx.mapPath);
             fail.put("reason", ctx.error);
             trace.event("fsm_route_plan_failed", fail);
@@ -2649,18 +2658,21 @@ public class CortexFsmEngine {
         ctx.autoLockAfterTask = true;
         ctx.unlockPin = "";
         ctx.useMap = true;
+        ctx.mapSource = "stable";
         try {
             LlmConfig cfg = LlmConfig.loadDefault();
             ctx.autoUnlockBeforeRoute = cfg.autoUnlockBeforeRoute;
             ctx.autoLockAfterTask = cfg.autoLockAfterTask;
             ctx.unlockPin = cfg.unlockPin != null ? cfg.unlockPin.trim() : "";
             ctx.useMap = cfg.useMap;
+            ctx.mapSource = cfg.mapSource != null ? cfg.mapSource.trim() : "stable";
 
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("task_id", ctx.taskId);
             ev.put("auto_unlock_before_route", ctx.autoUnlockBeforeRoute);
             ev.put("auto_lock_after_task", ctx.autoLockAfterTask);
             ev.put("use_map", ctx.useMap);
+            ev.put("map_source", ctx.mapSource);
             ev.put("has_unlock_pin", !ctx.unlockPin.isEmpty());
             trace.event("fsm_unlock_policy_loaded", ev);
         } catch (Exception e) {
@@ -2671,6 +2683,7 @@ public class CortexFsmEngine {
             ev.put("auto_unlock_before_route", ctx.autoUnlockBeforeRoute);
             ev.put("auto_lock_after_task", ctx.autoLockAfterTask);
             ev.put("use_map", ctx.useMap);
+            ev.put("map_source", ctx.mapSource);
             trace.event("fsm_unlock_policy_default", ev);
         }
     }

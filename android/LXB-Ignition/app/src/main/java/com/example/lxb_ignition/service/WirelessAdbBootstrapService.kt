@@ -19,6 +19,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.RemoteInput
 import com.example.lxb_ignition.MainActivity
 import com.example.lxb_ignition.R
+import com.example.lxb_ignition.storage.AppStatePaths
 import io.github.muntashirakon.adb.AdbPairingRequiredException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -965,6 +966,9 @@ class WirelessAdbBootstrapService : Service() {
                 append(shellQuote(CORE_NICE_NAME))
             }
         }
+        val mapDir = AppStatePaths.getMapDir(applicationContext).absolutePath
+        val llmConfigPath = AppStatePaths.getLlmConfigPath(applicationContext)
+        val taskMemoryPath = AppStatePaths.getTaskMemoryPath(applicationContext)
         return buildString {
             append(shellQuote(REMOTE_STARTER_PATH))
             append(" --action start")
@@ -978,6 +982,12 @@ class WirelessAdbBootstrapService : Service() {
             append(port)
             append(" --log ")
             append(shellQuote(REMOTE_LOG_PATH))
+            append(" --map-dir ")
+            append(shellQuote(mapDir))
+            append(" --llm-config ")
+            append(shellQuote(llmConfigPath))
+            append(" --task-memory ")
+            append(shellQuote(taskMemoryPath))
         }
     }
 

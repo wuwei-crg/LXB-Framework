@@ -25,8 +25,16 @@ class MapSyncManager(
         private const val REGISTRY_FILE = "map_registry.json"
         private const val ACTIVE_FILE = "map_active.json"
         private const val CACHE_DIR = "map_cloud_cache"
+        private const val LANE_ROOT_DIR = "_lane"
         private const val REGISTRY_SCHEMA = "lxb.map.registry.v1"
-        private const val ACTIVE_SCHEMA = "lxb.map.active.v2"
+        private const val ACTIVE_SCHEMA = "lxb.map.active.v3"
+
+        private const val SOURCE_STABLE = "stable"
+        private const val SOURCE_CANDIDATE = "candidate"
+        private const val SOURCE_BURN = "burn"
+
+        private const val LANE_STABLE = "stable"
+        private const val LANE_CANDIDATES = "candidates"
     }
 
     data class MapEntry(
@@ -55,23 +63,25 @@ class MapSyncManager(
         val failedPackages: Int
     )
 
-    data class ReconcileResult(
-        val totalPackages: Int,
-        val switchedPackages: Int,
+    data class ApplyResult(
+        val readPackages: Int,
+        val appliedPackages: Int,
         val failedPackages: Int
     )
 
+    fun normalizeSelectedSource(selectedSourceRaw: String): String {
+        return normalizeSource(selectedSourceRaw)
+    }
+
     fun syncLaneIndex(rawBaseUrl: String, laneRaw: String): Result<SyncIndexResult> = runCatching {
-        val lane = normalizeLane(laneRaw)
+        val lane = normalizeRepoLane(laneRaw)
         val base = normalizeRawBaseUrl(rawBaseUrl)
         val indexUrl = "$base/manifests/$lane/latest.json"
         val body = httpGetBytes(indexUrl)
         val text = body.toString(StandardCharsets.UTF_8)
         val obj = JSONObject(text)
         val arr = when {
-            // New manifest format.
             obj.has("items") && obj.opt("items") is JSONArray -> obj.optJSONArray("items")
-            // Backward-compat fallback: old index formats.
             obj.has("maps") && obj.opt("maps") is JSONArray -> obj.optJSONArray("maps")
             obj.has("candidates") && obj.opt("candidates") is JSONArray -> obj.optJSONArray("candidates")
             else -> JSONArray()
@@ -114,8 +124,9 @@ class MapSyncManager(
         SyncIndexResult(lane = lane, count = normalized.length(), indexUrl = indexUrl)
     }
 
-    fun syncStableAndApplyAll(rawBaseUrl: String, debugModeEnabled: Boolean): Result<ApplyAllResult> = runCatching {
-        val lane = "stable"
+    fun syncStableAndApplyAll(rawBaseUrl: String, selectedSourceRaw: String): Result<ApplyAllResult> = runCatching {
+        val lane = LANE_STABLE
+        val selectedSource = normalizeSource(selectedSourceRaw)
         val idx = syncLaneIndex(rawBaseUrl, lane).getOrThrow()
         val entries = allEntriesForLane(lane)
         if (entries.isEmpty()) {
@@ -138,8 +149,9 @@ class MapSyncManager(
             val ok = runCatching {
                 val jsonText = downloadAndValidateJson(rawBaseUrl, entry)
                 writeCacheEntry(entry.lane, pkg, entry.mapId, jsonText)
-                upsertActiveSlot(pkg, lane = "stable", entry = entry)
-                reconcilePackageRuntime(pkg, debugModeEnabled)
+                writeLaneMap(SOURCE_STABLE, pkg, jsonText)
+                upsertActiveSlot(pkg, SOURCE_STABLE, entry)
+                reconcilePackageRuntime(pkg, selectedSource)
             }.isSuccess
             if (ok) applied++ else failed++
         }
@@ -156,23 +168,25 @@ class MapSyncManager(
         rawBaseUrl: String,
         packageNameRaw: String,
         mapIdRaw: String,
-        debugModeEnabled: Boolean
+        selectedSourceRaw: String
     ): Result<String> = runCatching {
+        val selectedSource = normalizeSource(selectedSourceRaw)
         val pkg = packageNameRaw.trim()
         val mapId = mapIdRaw.trim()
         if (pkg.isEmpty() || mapId.isEmpty()) {
             throw IllegalArgumentException("package and map_id are required")
         }
-        var entry = findEntryById("stable", pkg, mapId)
+        var entry = findEntryById(LANE_STABLE, pkg, mapId)
         if (entry == null) {
-            syncLaneIndex(rawBaseUrl, "stable").getOrThrow()
-            entry = findEntryById("stable", pkg, mapId)
+            syncLaneIndex(rawBaseUrl, LANE_STABLE).getOrThrow()
+            entry = findEntryById(LANE_STABLE, pkg, mapId)
         }
         val selected = entry ?: throw IllegalStateException("stable map not found: package=$pkg map_id=$mapId")
         val jsonText = downloadAndValidateJson(rawBaseUrl, selected)
         writeCacheEntry(selected.lane, pkg, selected.mapId, jsonText)
-        upsertActiveSlot(pkg, lane = "stable", entry = selected)
-        reconcilePackageRuntime(pkg, debugModeEnabled)
+        writeLaneMap(SOURCE_STABLE, pkg, jsonText)
+        upsertActiveSlot(pkg, SOURCE_STABLE, selected)
+        reconcilePackageRuntime(pkg, selectedSource)
         "Stable map pulled: package=$pkg map_id=$mapId"
     }
 
@@ -180,48 +194,42 @@ class MapSyncManager(
         rawBaseUrl: String,
         packageNameRaw: String,
         mapIdRaw: String,
-        debugModeEnabled: Boolean
+        selectedSourceRaw: String
     ): Result<String> = runCatching {
+        val selectedSource = normalizeSource(selectedSourceRaw)
         val pkg = packageNameRaw.trim()
         val mapId = mapIdRaw.trim()
         if (pkg.isEmpty() || mapId.isEmpty()) {
             throw IllegalArgumentException("package and map_id are required")
         }
-        var entry = findEntryById("candidates", pkg, mapId)
+        var entry = findEntryById(LANE_CANDIDATES, pkg, mapId)
         if (entry == null) {
-            syncLaneIndex(rawBaseUrl, "candidates").getOrThrow()
-            entry = findEntryById("candidates", pkg, mapId)
+            syncLaneIndex(rawBaseUrl, LANE_CANDIDATES).getOrThrow()
+            entry = findEntryById(LANE_CANDIDATES, pkg, mapId)
         }
         val selected = entry ?: throw IllegalStateException("candidate map not found: package=$pkg map_id=$mapId")
         val jsonText = downloadAndValidateJson(rawBaseUrl, selected)
         writeCacheEntry(selected.lane, pkg, selected.mapId, jsonText)
-        upsertActiveSlot(pkg, lane = "candidate", entry = selected)
-        var note = ""
-        if (debugModeEnabled) {
-            reconcilePackageRuntime(pkg, debugModeEnabled = true)
-        } else {
-            runCatching { reconcilePackageRuntime(pkg, debugModeEnabled = false) }.onFailure {
-                note = " (stable runtime unchanged: ${it.message})"
-            }
-        }
-        "Candidate map pulled: package=$pkg map_id=$mapId$note"
+        writeLaneMap(SOURCE_CANDIDATE, pkg, jsonText)
+        upsertActiveSlot(pkg, SOURCE_CANDIDATE, selected)
+        reconcilePackageRuntime(pkg, selectedSource)
+        "Candidate map pulled: package=$pkg map_id=$mapId"
     }
 
-    fun setDebugModeAndReconcile(debugModeEnabled: Boolean): Result<ReconcileResult> = runCatching {
-        val active = loadActive()
-        val packages = active.optJSONObject("packages") ?: JSONObject()
-        val names = packages.keys().asSequence().toList()
-        var switched = 0
+    fun applySelectedSourceToAllPackages(selectedSourceRaw: String): Result<ApplyResult> = runCatching {
+        val selectedSource = normalizeSource(selectedSourceRaw)
+        val names = listPackagesWithValidMapInLane(selectedSource)
+        var applied = 0
         var failed = 0
         for (pkg in names) {
             val ok = runCatching {
-                reconcilePackageRuntime(pkg, debugModeEnabled)
+                reconcilePackageRuntime(pkg, selectedSource)
             }.isSuccess
-            if (ok) switched++ else failed++
+            if (ok) applied++ else failed++
         }
-        ReconcileResult(
-            totalPackages = names.size,
-            switchedPackages = switched,
+        ApplyResult(
+            readPackages = names.size,
+            appliedPackages = applied,
             failedPackages = failed
         )
     }
@@ -231,25 +239,42 @@ class MapSyncManager(
         if (pkg.isEmpty()) return "package is empty"
         val active = loadActive()
         val packages = active.optJSONObject("packages") ?: return "active status: none"
-        val row = packages.optJSONObject(pkg) ?: return "active status: none for package=$pkg"
-        val stable = row.optJSONObject("stable")
-        val candidate = row.optJSONObject("candidate")
+        val row = packages.optJSONObject(pkg) ?: JSONObject()
+        val stable = row.optJSONObject(SOURCE_STABLE)
+        val candidate = row.optJSONObject(SOURCE_CANDIDATE)
+        val burn = row.optJSONObject(SOURCE_BURN)
         val effective = row.optJSONObject("effective")
-        val stableId = stable?.optString("map_id", "")?.takeIf { it.isNotBlank() } ?: "-"
-        val candidateId = candidate?.optString("map_id", "")?.takeIf { it.isNotBlank() } ?: "-"
+
+        val stableId = stable?.optString("map_id", "")?.takeIf { it.isNotBlank() }
+            ?: if (laneMapFile(SOURCE_STABLE, pkg).exists()) "present" else "-"
+        val candidateId = candidate?.optString("map_id", "")?.takeIf { it.isNotBlank() }
+            ?: if (laneMapFile(SOURCE_CANDIDATE, pkg).exists()) "present" else "-"
+        val burnId = burn?.optString("map_id", "")?.takeIf { it.isNotBlank() }
+            ?: if (laneMapFile(SOURCE_BURN, pkg).exists()) "present" else "-"
         val source = effective?.optString("source", "")?.takeIf { it.isNotBlank() } ?: "-"
         val effectiveId = effective?.optString("map_id", "")?.takeIf { it.isNotBlank() } ?: "-"
-        return "stable=$stableId candidate=$candidateId effective=$source/$effectiveId"
+        return "stable=$stableId candidate=$candidateId burn=$burnId effective=$source/$effectiveId"
     }
 
-    fun startupSyncStable(rawBaseUrl: String, debugModeEnabled: Boolean): Result<String> = runCatching {
-        val r = syncStableAndApplyAll(rawBaseUrl, debugModeEnabled).getOrThrow()
+    fun startupSyncStable(rawBaseUrl: String, selectedSourceRaw: String): Result<String> = runCatching {
+        val r = syncStableAndApplyAll(rawBaseUrl, selectedSourceRaw).getOrThrow()
         "startup stable sync done: indexed=${r.indexedCount}, applied=${r.appliedPackages}/${r.totalPackages}, failed=${r.failedPackages}"
     }
 
-    private fun normalizeLane(laneRaw: String): String {
+    private fun normalizeRepoLane(laneRaw: String): String {
         val lane = laneRaw.trim().lowercase(Locale.US)
-        return if (lane == "candidates") "candidates" else "stable"
+        return if (lane == LANE_CANDIDATES || lane == SOURCE_CANDIDATE) LANE_CANDIDATES else LANE_STABLE
+    }
+
+    private fun normalizeSource(sourceRaw: String): String {
+        val source = sourceRaw.trim().lowercase(Locale.US)
+        return when (source) {
+            LANE_CANDIDATES -> SOURCE_CANDIDATE
+            SOURCE_STABLE -> SOURCE_STABLE
+            SOURCE_CANDIDATE -> SOURCE_CANDIDATE
+            SOURCE_BURN -> SOURCE_BURN
+            else -> SOURCE_STABLE
+        }
     }
 
     private fun normalizeRawBaseUrl(raw: String): String {
@@ -266,9 +291,10 @@ class MapSyncManager(
     }
 
     private fun allEntriesForLane(lane: String): List<MapEntry> {
+        val normalizedLane = normalizeRepoLane(lane)
         val registry = loadRegistry()
         val lanes = registry.optJSONObject("lanes") ?: return emptyList()
-        val laneObj = lanes.optJSONObject(lane) ?: return emptyList()
+        val laneObj = lanes.optJSONObject(normalizedLane) ?: return emptyList()
         val arr = laneObj.optJSONArray("maps") ?: return emptyList()
         val list = mutableListOf<MapEntry>()
         for (i in 0 until arr.length()) {
@@ -277,7 +303,7 @@ class MapSyncManager(
             if (pkg.isEmpty()) continue
             list.add(
                 MapEntry(
-                    lane = lane,
+                    lane = normalizedLane,
                     packageName = pkg,
                     mapId = row.optString("map_id", "").trim(),
                     mapPath = row.optString("map_path", "").trim(),
@@ -310,7 +336,8 @@ class MapSyncManager(
         return runCatching { Instant.parse(text).toEpochMilli() }.getOrElse { 0L }
     }
 
-    private fun upsertActiveSlot(packageName: String, lane: String, entry: MapEntry) {
+    private fun upsertActiveSlot(packageName: String, sourceSlotRaw: String, entry: MapEntry) {
+        val sourceSlot = normalizeSource(sourceSlotRaw)
         val active = loadActive()
         val packages = active.optJSONObject("packages") ?: JSONObject()
         val row = packages.optJSONObject(packageName) ?: JSONObject()
@@ -322,7 +349,7 @@ class MapSyncManager(
             .put("generated_at", entry.generatedAt)
             .put("stable_at", entry.stableAt)
             .put("updated_at", Instant.now().toString())
-        row.put(if (lane == "candidate") "candidate" else "stable", slot)
+        row.put(sourceSlot, slot)
         row.put("updated_at", Instant.now().toString())
         packages.put(packageName, row)
         active.put("schema_version", ACTIVE_SCHEMA)
@@ -331,30 +358,53 @@ class MapSyncManager(
         saveJson(activeFile(), active)
     }
 
-    private fun reconcilePackageRuntime(packageName: String, debugModeEnabled: Boolean) {
-        val active = loadActive()
-        val packages = active.optJSONObject("packages") ?: throw IllegalStateException("active packages missing")
-        val row = packages.optJSONObject(packageName) ?: throw IllegalStateException("active package not found")
-        val stable = row.optJSONObject("stable")
-        val candidate = row.optJSONObject("candidate")
+    private fun listPackagesInLane(sourceRaw: String): List<String> {
+        val source = normalizeSource(sourceRaw)
+        val laneDir = File(File(AppStatePaths.getMapDir(app), LANE_ROOT_DIR), source)
+        val dirs = laneDir.listFiles { f -> f.isDirectory } ?: return emptyList()
+        return dirs.map { it.name }
+    }
 
-        val hasCandidate = candidate != null &&
-            candidate.optString("map_id", "").isNotBlank() &&
-            hasCachedMap("candidates", packageName, candidate.optString("map_id", ""))
-
-        val targetLane = if (debugModeEnabled && hasCandidate) "candidates" else "stable"
-        val targetSlot = if (targetLane == "candidates") candidate else stable
-        val mapId = targetSlot?.optString("map_id", "")?.trim().orEmpty()
-        if (mapId.isEmpty()) {
-            throw IllegalStateException("no $targetLane map id for package=$packageName")
+    private fun listPackagesWithValidMapInLane(sourceRaw: String): List<String> {
+        val source = normalizeSource(sourceRaw)
+        val laneDir = File(File(AppStatePaths.getMapDir(app), LANE_ROOT_DIR), source)
+        val dirs = laneDir.listFiles { f -> f.isDirectory } ?: return emptyList()
+        val out = mutableListOf<String>()
+        for (d in dirs) {
+            val f = File(d, "nav_map.json")
+            if (f.exists() && f.isFile() && f.length() > 0L) {
+                out.add(d.name)
+            }
         }
-        val jsonText = readCachedMapJsonText(targetLane, packageName, mapId)
-            ?: throw IllegalStateException("cached map missing: lane=$targetLane package=$packageName map_id=$mapId")
-        applyRuntimeMap(packageName, jsonText)
+        return out
+    }
 
+    private fun reconcilePackageRuntime(packageName: String, selectedSourceRaw: String) {
+        val selectedSource = normalizeSource(selectedSourceRaw)
+        ensureLaneFileReady(packageName, selectedSource)
+        updateEffectiveSlot(packageName, selectedSource)
+    }
+
+    private fun ensureLaneFileReady(packageName: String, selectedSource: String): File {
+        val laneFile = laneMapFile(selectedSource, packageName)
+        if (laneFile.exists() && laneFile.isFile() && laneFile.length() > 0L) {
+            return laneFile
+        }
+        throw IllegalStateException("source map missing: source=$selectedSource package=$packageName")
+    }
+
+    private fun updateEffectiveSlot(packageName: String, selectedSourceRaw: String) {
+        val selectedSource = normalizeSource(selectedSourceRaw)
+        val active = loadActive()
+        val packages = active.optJSONObject("packages") ?: JSONObject()
+        val row = packages.optJSONObject(packageName) ?: JSONObject()
+        val slot = row.optJSONObject(selectedSource)
+        val mapId = slot?.optString("map_id", "")?.trim().orEmpty().ifBlank {
+            if (selectedSource == SOURCE_BURN) "burn_local" else "unknown"
+        }
         val effective = JSONObject()
-            .put("source", if (targetLane == "candidates") "candidate" else "stable")
-            .put("lane", targetLane)
+            .put("source", selectedSource)
+            .put("lane", sourceToRepoLane(selectedSource))
             .put("map_id", mapId)
             .put("updated_at", Instant.now().toString())
         row.put("effective", effective)
@@ -364,6 +414,14 @@ class MapSyncManager(
         active.put("updated_at", Instant.now().toString())
         active.put("packages", packages)
         saveJson(activeFile(), active)
+    }
+
+    private fun sourceToRepoLane(sourceRaw: String): String {
+        return when (normalizeSource(sourceRaw)) {
+            SOURCE_CANDIDATE -> LANE_CANDIDATES
+            SOURCE_BURN -> SOURCE_BURN
+            else -> LANE_STABLE
+        }
     }
 
     private fun downloadAndValidateJson(rawBaseUrl: String, entry: MapEntry): String {
@@ -385,7 +443,8 @@ class MapSyncManager(
         return jsonText
     }
 
-    private fun writeCacheEntry(lane: String, packageName: String, mapId: String, jsonText: String) {
+    private fun writeCacheEntry(laneRaw: String, packageName: String, mapId: String, jsonText: String) {
+        val lane = normalizeRepoLane(laneRaw)
         val dir = cacheEntryDir(lane, packageName, mapId)
         if (!dir.exists()) dir.mkdirs()
         writeUtf8(File(dir, "nav_map.json"), jsonText)
@@ -400,38 +459,39 @@ class MapSyncManager(
         return File(cacheRoot, "${lane.trim().lowercase(Locale.US)}/${safePackage(packageName)}/$mapId")
     }
 
-    private fun hasCachedMap(lane: String, packageName: String, mapId: String): Boolean {
-        val dir = cacheEntryDir(lane, packageName, mapId)
-        return File(dir, "nav_map.json").exists() || File(dir, "nav_map.json.gz").exists()
-    }
-
-    private fun readCachedMapJsonText(lane: String, packageName: String, mapId: String): String? {
-        val dir = cacheEntryDir(lane, packageName, mapId)
-        val jsonFile = File(dir, "nav_map.json")
-        if (jsonFile.exists()) {
-            return runCatching { jsonFile.readText(Charsets.UTF_8) }.getOrNull()
-        }
-        val gzFile = File(dir, "nav_map.json.gz")
-        if (gzFile.exists()) {
-            return runCatching {
-                GZIPInputStream(gzFile.inputStream()).use { gis ->
-                    InputStreamReader(gis, StandardCharsets.UTF_8).readText()
-                }
-            }.getOrNull()
-        }
-        return null
-    }
-
-    private fun applyRuntimeMap(packageName: String, jsonText: String) {
-        val mapFile = currentMapFile(packageName)
-        val backupFile = backupMapFile(packageName)
-        if (mapFile.exists()) {
+    private fun writeLaneMap(sourceRaw: String, packageName: String, jsonText: String) {
+        val laneFile = laneMapFile(sourceRaw, packageName)
+        val backupFile = laneBackupMapFile(sourceRaw, packageName)
+        if (laneFile.exists()) {
             runCatching {
                 if (backupFile.exists()) backupFile.delete()
-                mapFile.copyTo(backupFile, overwrite = true)
+                laneFile.copyTo(backupFile, overwrite = true)
             }
         }
-        writeUtf8(mapFile, jsonText)
+        writeUtf8(laneFile, jsonText)
+    }
+
+    private fun laneMapFile(sourceRaw: String, packageName: String): File {
+        val source = normalizeSource(sourceRaw)
+        val pkgDir = File(File(File(AppStatePaths.getMapDir(app), LANE_ROOT_DIR), source), safePackage(packageName))
+        return File(pkgDir, "nav_map.json")
+    }
+
+    private fun laneBackupMapFile(sourceRaw: String, packageName: String): File {
+        val source = normalizeSource(sourceRaw)
+        val pkgDir = File(File(File(AppStatePaths.getMapDir(app), LANE_ROOT_DIR), source), safePackage(packageName))
+        return File(pkgDir, "nav_map.bak.json")
+    }
+
+    private fun decodeMapToJsonText(bytes: ByteArray): String {
+        val isGz = bytes.size >= 2 && bytes[0] == 0x1F.toByte() && bytes[1] == 0x8B.toByte()
+        return if (isGz) {
+            GZIPInputStream(ByteArrayInputStream(bytes)).use { gis ->
+                InputStreamReader(gis, StandardCharsets.UTF_8).readText()
+            }
+        } else {
+            bytes.toString(StandardCharsets.UTF_8)
+        }
     }
 
     private fun guessMapIdFromMapPath(path: String): String {
@@ -448,29 +508,6 @@ class MapSyncManager(
             }
             return resp.body?.bytes() ?: throw IllegalStateException("empty body for $url")
         }
-    }
-
-    private fun decodeMapToJsonText(bytes: ByteArray): String {
-        val isGz = bytes.size >= 2 && bytes[0] == 0x1F.toByte() && bytes[1] == 0x8B.toByte()
-        return if (isGz) {
-            GZIPInputStream(ByteArrayInputStream(bytes)).use { gis ->
-                InputStreamReader(gis, StandardCharsets.UTF_8).readText()
-            }
-        } else {
-            bytes.toString(StandardCharsets.UTF_8)
-        }
-    }
-
-    private fun currentMapFile(packageName: String): File {
-        val pkgDir = File(AppStatePaths.getMapDir(app), safePackage(packageName))
-        if (!pkgDir.exists()) pkgDir.mkdirs()
-        return File(pkgDir, "nav_map.json")
-    }
-
-    private fun backupMapFile(packageName: String): File {
-        val pkgDir = File(AppStatePaths.getMapDir(app), safePackage(packageName))
-        if (!pkgDir.exists()) pkgDir.mkdirs()
-        return File(pkgDir, "nav_map.bak.json")
     }
 
     private fun safePackage(packageName: String): String {

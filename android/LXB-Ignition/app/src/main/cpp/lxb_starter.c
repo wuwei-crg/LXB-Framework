@@ -22,6 +22,9 @@ typedef struct {
     char process[128];
     char port[16];
     char log_path[512];
+    char map_dir[512];
+    char llm_config_path[512];
+    char task_memory_path[512];
 } Config;
 
 static void print_err(const char *code, const char *fmt, ...) {
@@ -133,6 +136,12 @@ static int parse_args(int argc, char **argv, Config *cfg) {
             snprintf(cfg->port, sizeof(cfg->port), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
             snprintf(cfg->log_path, sizeof(cfg->log_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--map-dir") == 0 && i + 1 < argc) {
+            snprintf(cfg->map_dir, sizeof(cfg->map_dir), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--llm-config") == 0 && i + 1 < argc) {
+            snprintf(cfg->llm_config_path, sizeof(cfg->llm_config_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--task-memory") == 0 && i + 1 < argc) {
+            snprintf(cfg->task_memory_path, sizeof(cfg->task_memory_path), "%s", argv[++i]);
         }
     }
     if (cfg->process[0] == '\0') snprintf(cfg->process, sizeof(cfg->process), "lxb_core");
@@ -179,18 +188,39 @@ static int start_core(const Config *cfg) {
 
         char classpath_arg[700];
         char nice_arg[200];
+        char map_dir_arg[700];
+        char llm_cfg_arg[700];
+        char task_mem_arg[700];
         snprintf(classpath_arg, sizeof(classpath_arg), "-Djava.class.path=%s", cfg->jar);
         snprintf(nice_arg, sizeof(nice_arg), "--nice-name=%s", cfg->process);
+        if (cfg->map_dir[0] != '\0') {
+            snprintf(map_dir_arg, sizeof(map_dir_arg), "-Dlxb.map.dir=%s", cfg->map_dir);
+        } else {
+            map_dir_arg[0] = '\0';
+        }
+        if (cfg->llm_config_path[0] != '\0') {
+            snprintf(llm_cfg_arg, sizeof(llm_cfg_arg), "-Dlxb.llm.config.path=%s", cfg->llm_config_path);
+        } else {
+            llm_cfg_arg[0] = '\0';
+        }
+        if (cfg->task_memory_path[0] != '\0') {
+            snprintf(task_mem_arg, sizeof(task_mem_arg), "-Dlxb.task.memory.path=%s", cfg->task_memory_path);
+        } else {
+            task_mem_arg[0] = '\0';
+        }
 
-        char *child_argv[] = {
-            "/system/bin/app_process",
-            classpath_arg,
-            "/system/bin",
-            nice_arg,
-            (char *) cfg->main_class,
-            (char *) cfg->port,
-            NULL
-        };
+        char *child_argv[12];
+        int argi = 0;
+        child_argv[argi++] = "/system/bin/app_process";
+        child_argv[argi++] = classpath_arg;
+        if (map_dir_arg[0] != '\0') child_argv[argi++] = map_dir_arg;
+        if (llm_cfg_arg[0] != '\0') child_argv[argi++] = llm_cfg_arg;
+        if (task_mem_arg[0] != '\0') child_argv[argi++] = task_mem_arg;
+        child_argv[argi++] = "/system/bin";
+        child_argv[argi++] = nice_arg;
+        child_argv[argi++] = (char *) cfg->main_class;
+        child_argv[argi++] = (char *) cfg->port;
+        child_argv[argi] = NULL;
         execvp(child_argv[0], child_argv);
         _exit(111);
     }

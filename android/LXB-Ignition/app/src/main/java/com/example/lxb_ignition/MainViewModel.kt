@@ -54,6 +54,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_UNLOCK_PIN = "unlock_pin"
         private const val KEY_USE_MAP = "use_map"
         private const val KEY_MAP_REPO_RAW_BASE_URL = "map_repo_raw_base_url"
+        private const val KEY_MAP_SOURCE = "map_source"
+        // Legacy key migration only (v0.4.0 and earlier).
         private const val KEY_MAP_DEBUG_LOCAL_OVERRIDE = "map_debug_local_override"
         private const val KEY_UI_LANG = "ui_lang"
         private const val DEFAULT_MAP_REPO_RAW_BASE_URL = "https://raw.githubusercontent.com/wuwei-crg/LXB-MapRepo/main"
@@ -76,6 +78,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private fun normalizeUiLang(raw: String?): String {
             val v = raw?.trim()?.lowercase() ?: "en"
             return if (v == "zh") "zh" else "en"
+        }
+
+        private fun normalizeMapSource(raw: String?): String {
+            val v = raw?.trim()?.lowercase() ?: "stable"
+            return when (v) {
+                "stable" -> "stable"
+                "candidate", "candidates" -> "candidate"
+                "burn" -> "burn"
+                else -> "stable"
+            }
         }
     }
 
@@ -105,7 +117,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.getString(KEY_MAP_REPO_RAW_BASE_URL, DEFAULT_MAP_REPO_RAW_BASE_URL)
             ?: DEFAULT_MAP_REPO_RAW_BASE_URL
     )
-    val mapDebugMode = MutableStateFlow(prefs.getBoolean(KEY_MAP_DEBUG_LOCAL_OVERRIDE, false))
+    private fun loadInitialMapSource(): String {
+        val saved = prefs.getString(KEY_MAP_SOURCE, null)
+        if (!saved.isNullOrBlank()) {
+            return normalizeMapSource(saved)
+        }
+        val legacyDebug = prefs.getBoolean(KEY_MAP_DEBUG_LOCAL_OVERRIDE, false)
+        return if (legacyDebug) "candidate" else "stable"
+    }
+    val mapSource = MutableStateFlow(loadInitialMapSource())
     val mapTargetPackage = MutableStateFlow("")
     val mapTargetId = MutableStateFlow("")
     val llmTestResult = MutableStateFlow("")
@@ -231,12 +251,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistNormalizedLxbPortIfNeeded()
         // Startup map sync:
         // - always sync stable lane
-        // - runtime map selection follows debug mode:
-        //   OFF => stable, ON => candidate when cached else stable
+        // - runtime map source follows selected source (stable/candidate/burn)
         viewModelScope.launch(Dispatchers.IO) {
             val msg = mapSyncManager.startupSyncStable(
                 rawBaseUrl = mapRepoRawBaseUrl.value.trim(),
-                debugModeEnabled = mapDebugMode.value
+                selectedSourceRaw = mapSource.value
             ).getOrElse { "startup stable sync skipped: ${it.message}" }
             appendLog("[MAP] $msg")
         }
@@ -1295,6 +1314,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .put("auto_lock_after_task", autoLockAfterTask.value)
             .put("unlock_pin", unlockPin.value.trim())
             .put("use_map", useMap.value)
+            .put("map_source", mapSource.value)
             .toString()
     }
 
@@ -1430,7 +1450,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         saveConfig()
         viewModelScope.launch(Dispatchers.IO) {
-            val msg = mapSyncManager.syncStableAndApplyAll(base, mapDebugMode.value).fold(
+            val msg = mapSyncManager.syncStableAndApplyAll(base, mapSource.value).fold(
                 onSuccess = { r ->
                     "Stable sync+apply done: indexed=${r.indexedCount}, applied=${r.appliedPackages}/${r.totalPackages}, failed=${r.failedPackages}"
                 },
@@ -1460,7 +1480,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         saveConfig()
         viewModelScope.launch(Dispatchers.IO) {
-            val msg = mapSyncManager.pullStableByIdentifier(base, pkg, mapId, mapDebugMode.value).fold(
+            val msg = mapSyncManager.pullStableByIdentifier(base, pkg, mapId, mapSource.value).fold(
                 onSuccess = { it },
                 onFailure = { e -> "Pull stable map failed: ${e.message}" }
             )
@@ -1488,7 +1508,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         saveConfig()
         viewModelScope.launch(Dispatchers.IO) {
-            val msg = mapSyncManager.pullCandidateByIdentifier(base, pkg, mapId, mapDebugMode.value).fold(
+            val msg = mapSyncManager.pullCandidateByIdentifier(base, pkg, mapId, mapSource.value).fold(
                 onSuccess = { it },
                 onFailure = { e -> "Pull candidate map failed: ${e.message}" }
             )
@@ -1512,21 +1532,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appendSystemMessage(msg)
     }
 
-    fun setMapDebugMode(enabled: Boolean) {
-        mapDebugMode.value = enabled
+    fun setMapSource(sourceRaw: String) {
+        val source = mapSyncManager.normalizeSelectedSource(sourceRaw)
+        mapSource.value = source
         saveConfig()
         viewModelScope.launch(Dispatchers.IO) {
-            val reconcile = mapSyncManager.setDebugModeAndReconcile(enabled).fold(
-                onSuccess = { r ->
-                    "reconciled ${r.switchedPackages}/${r.totalPackages}, failed=${r.failedPackages}"
-                },
-                onFailure = { e -> "reconcile skipped: ${e.message}" }
+            val cfgSync = syncDeviceLlmConfigFile().fold(
+                onSuccess = { "config_synced" },
+                onFailure = { "config_sync_failed(${it.message})" }
             )
-            val msg = if (enabled) {
-                "Debug mode ON: candidate map will be used when available; fallback to stable. $reconcile"
-            } else {
-                "Debug mode OFF: stable map is enforced. $reconcile"
-            }
+            val applyResult = mapSyncManager.applySelectedSourceToAllPackages(source).fold(
+                onSuccess = { r ->
+                    "read=${r.readPackages}, applied=${r.appliedPackages}, failed=${r.failedPackages}"
+                },
+                onFailure = { e -> "apply skipped: ${e.message}" }
+            )
+            val msg = "Map source set to '$source'. $cfgSync; $applyResult"
             withContext(Dispatchers.Main) {
                 mapSyncResult.value = msg
                 appendLog("[MAP] $msg")
@@ -1772,7 +1793,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .putString(KEY_UNLOCK_PIN, unlockPin.value)
             .putBoolean(KEY_USE_MAP, useMap.value)
             .putString(KEY_MAP_REPO_RAW_BASE_URL, mapRepoRawBaseUrl.value)
-            .putBoolean(KEY_MAP_DEBUG_LOCAL_OVERRIDE, mapDebugMode.value)
+            .putString(KEY_MAP_SOURCE, normalizeMapSource(mapSource.value))
             .putString(KEY_UI_LANG, normalizedLang)
             .apply()
     }

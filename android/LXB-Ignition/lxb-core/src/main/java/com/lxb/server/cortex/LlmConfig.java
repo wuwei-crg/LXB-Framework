@@ -19,7 +19,8 @@ import java.util.Map;
  *   "auto_unlock_before_route": true,
  *   "auto_lock_after_task": true,
  *   "unlock_pin": "1234",
- *   "use_map": true
+ *   "use_map": true,
+ *   "map_source": "stable"
  * }
  */
 public class LlmConfig {
@@ -33,9 +34,10 @@ public class LlmConfig {
     public final boolean autoLockAfterTask;
     public final String unlockPin;
     public final boolean useMap;
+    public final String mapSource;
 
     public LlmConfig(String apiBaseUrl, String apiKey, String model) {
-        this(apiBaseUrl, apiKey, model, true, true, "", true);
+        this(apiBaseUrl, apiKey, model, true, true, "", true, "stable");
     }
 
     public LlmConfig(
@@ -45,7 +47,8 @@ public class LlmConfig {
             boolean autoUnlockBeforeRoute,
             boolean autoLockAfterTask,
             String unlockPin,
-            boolean useMap
+            boolean useMap,
+            String mapSource
     ) {
         this.apiBaseUrl = apiBaseUrl;
         this.apiKey = apiKey;
@@ -54,6 +57,7 @@ public class LlmConfig {
         this.autoLockAfterTask = autoLockAfterTask;
         this.unlockPin = unlockPin != null ? unlockPin : "";
         this.useMap = useMap;
+        this.mapSource = normalizeMapSource(mapSource);
     }
 
     public static LlmConfig loadDefault() throws Exception {
@@ -81,6 +85,7 @@ public class LlmConfig {
         boolean autoLockAfterTask = parseBool(obj.get("auto_lock_after_task"), true);
         String unlockPin = stringOrEmpty(obj.get("unlock_pin"));
         boolean useMap = parseBool(obj.get("use_map"), true);
+        String mapSource = normalizeMapSource(stringOrEmpty(obj.get("map_source")));
 
         if (baseUrl.isEmpty() || model.isEmpty()) {
             throw new IllegalStateException("LLM config missing api_base_url or model");
@@ -93,7 +98,8 @@ public class LlmConfig {
                 autoUnlockBeforeRoute,
                 autoLockAfterTask,
                 unlockPin,
-                useMap
+                useMap,
+                mapSource
         );
     }
 
@@ -119,6 +125,17 @@ public class LlmConfig {
             return false;
         }
         return defVal;
+    }
+
+    private static String normalizeMapSource(String raw) {
+        String s = raw == null ? "" : raw.trim().toLowerCase();
+        if ("candidates".equals(s)) {
+            return "candidate";
+        }
+        if ("stable".equals(s) || "candidate".equals(s) || "burn".equals(s)) {
+            return s;
+        }
+        return "stable";
     }
 
     private static byte[] readAllBytes(File f) throws Exception {

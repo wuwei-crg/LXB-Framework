@@ -332,7 +332,7 @@ private val ZhMap = mapOf(
     "Unlock & lock policy" to "解锁与锁屏策略",
     "Auto unlock before route, auto lock after task, and lockscreen credentials." to "配置路由前自动解锁、任务后自动锁屏与锁屏凭据。",
     "Map sync & source" to "地图同步与来源",
-    "Sync stable maps, pull map by identifier, and switch stable/candidate in debug mode." to "同步稳定地图、按标识拉取地图，并在调试模式切换 stable/candidate。",
+    "Sync stable maps, pull map by identifier, and choose runtime source lane." to "同步稳定地图、按标识拉取地图，并选择运行时地图来源。",
     "App update" to "应用更新",
     "Check and open latest GitHub release APK." to "检查并打开 GitHub 最新 Release APK。",
     "Current app version" to "当前应用版本",
@@ -358,9 +358,11 @@ private val ZhMap = mapOf(
     "Use map routing" to "使用 Map 路由",
     "ON: route with map when available." to "开启：有地图时优先按地图路由。",
     "OFF: force no-map mode (launch then vision-only)." to "关闭：强制无地图模式（仅启动后视觉执行）。",
-    "Debug mode" to "调试模式",
-    "ON: use candidate map when available; fallback to stable." to "开启：优先使用 candidate，无则回退 stable。",
-    "OFF: always use stable map." to "关闭：始终使用 stable。",
+    "Map source" to "地图来源",
+    "Choose which lane is applied to runtime routing map." to "选择应用到运行时路由地图的来源。",
+    "Stable" to "稳定",
+    "Candidate" to "测试",
+    "Burn" to "烧录",
     "Package name" to "包名",
     "Used for pull-by-identifier and active status." to "用于按标识拉取与查看当前生效状态。",
     "Map ID" to "Map ID",
@@ -1530,7 +1532,7 @@ fun ConfigOverviewPage(
         )
         ConfigEntryCard(
             title = tr("Map sync & source"),
-            description = tr("Sync stable maps, pull map by identifier, and switch stable/candidate in debug mode."),
+            description = tr("Sync stable maps, pull map by identifier, and choose runtime source lane."),
             onClick = onOpenMapSync
         )
     }
@@ -1805,7 +1807,7 @@ fun UnlockPolicyConfigCard(viewModel: MainViewModel) {
 fun MapSyncConfigCard(viewModel: MainViewModel) {
     val mapRepoRawBaseUrl by viewModel.mapRepoRawBaseUrl.collectAsState()
     val useMap by viewModel.useMap.collectAsState()
-    val mapDebugMode by viewModel.mapDebugMode.collectAsState()
+    val mapSource by viewModel.mapSource.collectAsState()
     val mapTargetPackage by viewModel.mapTargetPackage.collectAsState()
     val mapTargetId by viewModel.mapTargetId.collectAsState()
     val mapSyncResult by viewModel.mapSyncResult.collectAsState()
@@ -1855,21 +1857,36 @@ fun MapSyncConfigCard(viewModel: MainViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(tr("Debug mode"), style = MaterialTheme.typography.bodyMedium)
+                    Text(tr("Map source"), style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        text = if (mapDebugMode) {
-                            tr("ON: use candidate map when available; fallback to stable.")
-                        } else {
-                            tr("OFF: always use stable map.")
-                        },
+                        text = tr("Choose which lane is applied to runtime routing map."),
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
                     )
                 }
-                Switch(
-                    checked = mapDebugMode,
-                    onCheckedChange = { viewModel.setMapDebugMode(it) }
-                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { viewModel.setMapSource("stable") },
+                    modifier = Modifier.weight(1f),
+                    enabled = mapSource != "stable"
+                ) {
+                    Text(tr("Stable"))
+                }
+                OutlinedButton(
+                    onClick = { viewModel.setMapSource("candidate") },
+                    modifier = Modifier.weight(1f),
+                    enabled = mapSource != "candidate"
+                ) {
+                    Text(tr("Candidate"))
+                }
+                OutlinedButton(
+                    onClick = { viewModel.setMapSource("burn") },
+                    modifier = Modifier.weight(1f),
+                    enabled = mapSource != "burn"
+                ) {
+                    Text(tr("Burn"))
+                }
             }
             OutlinedTextField(
                 value = mapTargetPackage,

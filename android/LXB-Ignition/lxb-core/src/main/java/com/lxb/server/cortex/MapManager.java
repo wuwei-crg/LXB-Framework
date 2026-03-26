@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
  */
 public class MapManager {
 
+    private static final String LANE_ROOT_DIR = "_lane";
     private final File baseDir;
 
     public MapManager() {
@@ -38,6 +39,22 @@ public class MapManager {
         return new File(getPkgDir(pkg), "nav_map.bak.json");
     }
 
+    public File getLaneMapFile(String laneRaw, String pkg) {
+        return new File(getLanePkgDir(laneRaw, pkg), "nav_map.json");
+    }
+
+    public File getLaneBackupMapFile(String laneRaw, String pkg) {
+        return new File(getLanePkgDir(laneRaw, pkg), "nav_map.bak.json");
+    }
+
+    public File getMapFileForSource(String pkg, String sourceRaw) {
+        String source = normalizeSource(sourceRaw);
+        if ("stable".equals(source) || "candidate".equals(source) || "burn".equals(source)) {
+            return getLaneMapFile(source, pkg);
+        }
+        return getLaneMapFile("stable", pkg);
+    }
+
     public void setCurrentMap(String pkg, String mapJson) throws Exception {
         File pkgDir = getPkgDir(pkg);
         //noinspection ResultOfMethodCallIgnored
@@ -55,10 +72,46 @@ public class MapManager {
         writeUtf8(current, mapJson);
     }
 
+    public void setLaneMap(String laneRaw, String pkg, String mapJson) throws Exception {
+        File pkgDir = getLanePkgDir(laneRaw, pkg);
+        //noinspection ResultOfMethodCallIgnored
+        pkgDir.mkdirs();
+
+        File current = getLaneMapFile(laneRaw, pkg);
+        File backup = getLaneBackupMapFile(laneRaw, pkg);
+
+        if (current.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            current.renameTo(backup);
+        }
+
+        writeUtf8(current, mapJson);
+    }
+
     private File getPkgDir(String pkg) {
         // avoid path traversal; keep it simple.
         String safe = pkg.replace("/", "_").replace("\\", "_").trim();
         return new File(baseDir, safe);
+    }
+
+    private File getLanePkgDir(String laneRaw, String pkg) {
+        String lane = normalizeSource(laneRaw);
+        String safePkg = pkg.replace("/", "_").replace("\\", "_").trim();
+        return new File(new File(new File(baseDir, LANE_ROOT_DIR), lane), safePkg);
+    }
+
+    private static String normalizeSource(String sourceRaw) {
+        if (sourceRaw == null) {
+            return "stable";
+        }
+        String source = sourceRaw.trim().toLowerCase();
+        if ("candidates".equals(source)) {
+            return "candidate";
+        }
+        if ("stable".equals(source) || "candidate".equals(source) || "burn".equals(source)) {
+            return source;
+        }
+        return "stable";
     }
 
     private static void writeUtf8(File f, String s) throws Exception {
@@ -77,4 +130,3 @@ public class MapManager {
         return new File("/data/local/tmp/lxb/maps");
     }
 }
-
