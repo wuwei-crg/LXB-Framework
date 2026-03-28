@@ -154,12 +154,10 @@ public class CortexFsmEngine {
     private static final long FAST_SKIP_POST_TAP_SLEEP_MS = 220L;
     private static final int VISION_MAX_TURNS_SINGLE = 100;
     private static final int VISION_MAX_TURNS_LOOP = 100;
-    private static final long UNLOCK_POST_CMD_SLEEP_MS = 3000L;
+    private static final long UNLOCK_POST_WAKE_SLEEP_MS = 450L;
+    private static final long UNLOCK_POST_SWIPE_SLEEP_MS = 900L;
+    private static final int UNLOCK_SWIPE_DURATION_MS = 500;
     private static final long UNLOCK_POST_PIN_SLEEP_MS = 1200L;
-    private static final long UNLOCK_POST_HOME_SLEEP_MS = 700L;
-    private static final long UNLOCK_STABLE_TIMEOUT_MS = 3000L;
-    private static final long UNLOCK_STABLE_SAMPLE_MS = 300L;
-    private static final int UNLOCK_STABLE_REQUIRED_HITS = 2;
     private static final long ROUTING_FIRST_STEP_WINDOW_MS = 10000L;
     private static final long ROUTING_FIRST_STEP_SAMPLE_MS = 350L;
     private static final long ROUTING_FIRST_STEP_AFTER_SKIP_SLEEP_MS = 300L;
@@ -169,6 +167,7 @@ public class CortexFsmEngine {
     private static final int ROUTING_RECOVERY_MAX = 2;
     private static final long ROUTING_RECOVERY_POST_ACTION_SLEEP_MS = 300L;
     private static final int KEYCODE_HOME = 3;
+    private static final int KEYCODE_WAKEUP = 224;
     private static final int KEYCODE_POWER = 26;
 
     // Allowed ops per state, mirroring Python _ALLOWED_OPS
@@ -2380,129 +2379,141 @@ public class CortexFsmEngine {
             return true;
         }
 
-        int state = getScreenStateCode();
-        boolean lockHint = isLikelyLockscreenShown();
-        if (state == 1 && !lockHint) {
+        int beforeState = getScreenStateCode();
+        boolean beforeLockHint = isLikelyLockscreenShown();
+        if (beforeState == 1 && !beforeLockHint) {
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("task_id", ctx.taskId);
             ev.put("package", packageName);
             ev.put("route_attempt", routeAttempt);
-            ev.put("screen_state", state);
+            ev.put("screen_state", beforeState);
             ev.put("lock_hint", false);
             ev.put("result", "already_unlocked");
             trace.event("fsm_route_unlock", ev);
             return true;
         }
 
-        // Locked/off or lockscreen-like foreground: perform unlock flow with stable checks.
-        for (int unlockAttempt = 1; unlockAttempt <= 3; unlockAttempt++) {
-            byte[] unlockResp = execution != null ? execution.handleUnlock(new byte[0]) : null;
-            boolean unlockCmdOk = unlockResp != null && unlockResp.length > 0 && unlockResp[0] == 0x01;
-            sleepQuiet(UNLOCK_POST_CMD_SLEEP_MS);
+        boolean wakeOk = sendKeyClick(KEYCODE_WAKEUP);
+        sleepQuiet(UNLOCK_POST_WAKE_SLEEP_MS);
 
-            int stateAfterUnlockCmd = getScreenStateCode();
-            boolean lockHintAfterUnlockCmd = isLikelyLockscreenShown();
-            boolean pinTried = false;
-            boolean pinInputOk = false;
-            boolean pinpadDetected = false;
-            boolean homeSent = false;
-            boolean unlockedStable = false;
-            boolean homeStable = false;
+        int stateAfterWake = getScreenStateCode();
+        boolean lockHintAfterWake = isLikelyLockscreenShown();
+        UnlockSwipeSpec[] swipeSpecs = new UnlockSwipeSpec[]{
+                new UnlockSwipeSpec(0.50d, 0.80d, 0.20d, UNLOCK_SWIPE_DURATION_MS),
+                new UnlockSwipeSpec(0.50d, 0.72d, 0.18d, UNLOCK_SWIPE_DURATION_MS + 60),
+                new UnlockSwipeSpec(0.38d, 0.82d, 0.22d, UNLOCK_SWIPE_DURATION_MS),
+                new UnlockSwipeSpec(0.62d, 0.82d, 0.22d, UNLOCK_SWIPE_DURATION_MS)
+        };
 
-            // After wake+swipe, only input PIN when dump_actions indicates a clickable numeric keypad.
-            if (!ctx.unlockPin.isEmpty()) {
-                pinpadDetected = detectClickableNumericKeypad(ctx);
+        int finalState = stateAfterWake;
+        boolean finalLockHint = lockHintAfterWake;
+        String finalPkg = "";
+        boolean pinpadDetected = false;
+        boolean pinTried = false;
+        boolean pinInputOk = false;
+        int swipeOkCount = 0;
+
+        for (int i = 0; i < swipeSpecs.length; i++) {
+            UnlockSwipeSpec spec = swipeSpecs[i];
+            boolean swipeOk = sendUnlockSwipe(ctx, spec);
+            if (swipeOk) {
+                swipeOkCount += 1;
             }
+            sleepQuiet(UNLOCK_POST_SWIPE_SLEEP_MS);
+
+            pinpadDetected = detectClickableNumericKeypad(ctx);
+            pinTried = false;
+            pinInputOk = false;
             if (pinpadDetected && !ctx.unlockPin.isEmpty()) {
                 pinTried = true;
                 pinInputOk = tryInputUnlockPin(ctx, ctx.unlockPin);
                 sleepQuiet(UNLOCK_POST_PIN_SLEEP_MS);
             }
 
-            unlockedStable = waitForUnlockedStableForRouting(
-                    UNLOCK_STABLE_TIMEOUT_MS,
-                    UNLOCK_STABLE_SAMPLE_MS,
-                    UNLOCK_STABLE_REQUIRED_HITS
-            );
+            finalState = getScreenStateCode();
+            ActivityInfo finalActivity = getCurrentActivityInfoForRouting();
+            finalPkg = finalActivity.packageName != null ? finalActivity.packageName : "";
+            String finalPkgLower = finalPkg.toLowerCase(Locale.ROOT);
+            finalLockHint = isLikelyLockscreenShown();
 
-            // Unlock considered successful only when lockscreen signal disappears stably.
-            if (unlockedStable) {
-                homeSent = sendKeyClick(KEYCODE_HOME);
-                sleepQuiet(UNLOCK_POST_HOME_SLEEP_MS);
-                homeStable = waitForUnlockedStableForRouting(
-                        UNLOCK_STABLE_TIMEOUT_MS,
-                        UNLOCK_STABLE_SAMPLE_MS,
-                        UNLOCK_STABLE_REQUIRED_HITS
-                );
-                if (homeStable) {
-                    ctx.unlockedByFsm = true;
+            boolean unlocked;
+            if (pinpadDetected) {
+                unlocked = !ctx.unlockPin.isEmpty() && pinInputOk && finalState == 1 && !finalLockHint;
+            } else {
+                unlocked = !finalLockHint && !finalPkgLower.contains("systemui");
+                if (!unlocked && finalState == 1 && !finalLockHint) {
+                    unlocked = true;
                 }
             }
 
-            int finalState = getScreenStateCode();
-            boolean finalLockHint = isLikelyLockscreenShown();
+            Map<String, Object> swipeEv = new LinkedHashMap<>();
+            swipeEv.put("task_id", ctx.taskId);
+            swipeEv.put("package", packageName);
+            swipeEv.put("route_attempt", routeAttempt);
+            swipeEv.put("flow", "linear_multi_swipe");
+            swipeEv.put("swipe_attempt", i + 1);
+            swipeEv.put("swipe_total", swipeSpecs.length);
+            swipeEv.put("swipe_ok", swipeOk);
+            swipeEv.put("swipe_x_ratio", spec.xRatio);
+            swipeEv.put("swipe_start_y_ratio", spec.startYRatio);
+            swipeEv.put("swipe_end_y_ratio", spec.endYRatio);
+            swipeEv.put("swipe_duration_ms", spec.durationMs);
+            swipeEv.put("pinpad_detected", pinpadDetected);
+            swipeEv.put("pin_tried", pinTried);
+            swipeEv.put("pin_input_ok", pinInputOk);
+            swipeEv.put("screen_state_final", finalState);
+            swipeEv.put("lock_hint_final", finalLockHint);
+            swipeEv.put("final_package", finalPkg);
+            swipeEv.put("unlocked", unlocked);
+            trace.event("fsm_route_unlock_swipe_attempt", swipeEv);
 
-            Map<String, Object> ev = new LinkedHashMap<>();
-            ev.put("task_id", ctx.taskId);
-            ev.put("package", packageName);
-            ev.put("route_attempt", routeAttempt);
-            ev.put("unlock_attempt", unlockAttempt);
-            ev.put("unlock_cmd_ok", unlockCmdOk);
-            ev.put("pin_tried", pinTried);
-            ev.put("pin_input_ok", pinInputOk);
-            ev.put("pinpad_detected", pinpadDetected);
-            ev.put("screen_state_after_unlock_cmd", stateAfterUnlockCmd);
-            ev.put("lock_hint_after_unlock_cmd", lockHintAfterUnlockCmd);
-            ev.put("unlocked_stable", unlockedStable);
-            ev.put("home_sent", homeSent);
-            ev.put("home_stable", homeStable);
-            ev.put("screen_state_final", finalState);
-            ev.put("lock_hint_final", finalLockHint);
-            trace.event("fsm_route_unlock_attempt", ev);
-
-            if (unlockedStable && homeStable && finalState == 1 && !finalLockHint) {
+            if (unlocked) {
+                ctx.unlockedByFsm = true;
                 Map<String, Object> okEv = new LinkedHashMap<>();
                 okEv.put("task_id", ctx.taskId);
                 okEv.put("package", packageName);
                 okEv.put("route_attempt", routeAttempt);
-                okEv.put("unlock_attempt", unlockAttempt);
-                okEv.put("home_sent", homeSent);
                 okEv.put("result", "ok");
+                okEv.put("flow", "linear_multi_swipe");
+                okEv.put("swipe_attempt", i + 1);
+                okEv.put("swipe_ok_count", swipeOkCount);
                 trace.event("fsm_route_unlock", okEv);
                 return true;
             }
         }
+
+        Map<String, Object> attemptEv = new LinkedHashMap<>();
+        attemptEv.put("task_id", ctx.taskId);
+        attemptEv.put("package", packageName);
+        attemptEv.put("route_attempt", routeAttempt);
+        attemptEv.put("flow", "linear_multi_swipe");
+        attemptEv.put("wake_ok", wakeOk);
+        attemptEv.put("swipe_ok_count", swipeOkCount);
+        attemptEv.put("swipe_total", swipeSpecs.length);
+        attemptEv.put("pinpad_detected", pinpadDetected);
+        attemptEv.put("pin_tried", pinTried);
+        attemptEv.put("pin_input_ok", pinInputOk);
+        attemptEv.put("screen_state_before", beforeState);
+        attemptEv.put("lock_hint_before", beforeLockHint);
+        attemptEv.put("screen_state_after_wake", stateAfterWake);
+        attemptEv.put("lock_hint_after_wake", lockHintAfterWake);
+        attemptEv.put("screen_state_final", finalState);
+        attemptEv.put("lock_hint_final", finalLockHint);
+        attemptEv.put("final_package", finalPkg);
+        trace.event("fsm_route_unlock_attempt", attemptEv);
 
         Map<String, Object> ev = new LinkedHashMap<>();
         ev.put("task_id", ctx.taskId);
         ev.put("package", packageName);
         ev.put("route_attempt", routeAttempt);
         ev.put("result", "failed");
-        ev.put("screen_state", getScreenStateCode());
-        ev.put("lock_hint", isLikelyLockscreenShown());
+        ev.put("flow", "linear_multi_swipe");
+        ev.put("screen_state", finalState);
+        ev.put("lock_hint", finalLockHint);
+        ev.put("pinpad_detected", pinpadDetected);
+        ev.put("has_unlock_pin", !ctx.unlockPin.isEmpty());
         trace.event("fsm_route_unlock", ev);
         return false;
-    }
-
-    private boolean waitForUnlockedStableForRouting(long timeoutMs, long sampleMs, int requiredHits) {
-        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
-        int hits = 0;
-        while (true) {
-            int state = getScreenStateCode();
-            boolean lockHint = isLikelyLockscreenShown();
-            if (state == 1 && !lockHint) {
-                hits += 1;
-                if (hits >= Math.max(1, requiredHits)) {
-                    return true;
-                }
-            } else {
-                hits = 0;
-            }
-            if (System.currentTimeMillis() >= deadline) {
-                return false;
-            }
-            sleepQuiet(Math.max(1L, sampleMs));
-        }
     }
 
     private boolean tryInputUnlockPin(Context ctx, String pin) {
@@ -2790,6 +2801,65 @@ public class CortexFsmEngine {
             }
         }
         return false;
+    }
+
+    private static class UnlockSwipeSpec {
+        final double xRatio;
+        final double startYRatio;
+        final double endYRatio;
+        final int durationMs;
+
+        UnlockSwipeSpec(double xRatio, double startYRatio, double endYRatio, int durationMs) {
+            this.xRatio = xRatio;
+            this.startYRatio = startYRatio;
+            this.endYRatio = endYRatio;
+            this.durationMs = durationMs;
+        }
+    }
+
+    private boolean sendUnlockSwipe(Context ctx, UnlockSwipeSpec spec) {
+        try {
+            int screenW = getPositiveInt(ctx != null ? ctx.deviceInfo.get("width") : null, 1080);
+            int screenH = getPositiveInt(ctx != null ? ctx.deviceInfo.get("height") : null, 2400);
+
+            double xRatio = spec != null ? spec.xRatio : 0.50d;
+            double startYRatio = spec != null ? spec.startYRatio : 0.80d;
+            double endYRatio = spec != null ? spec.endYRatio : 0.20d;
+            int durationMs = spec != null ? spec.durationMs : UNLOCK_SWIPE_DURATION_MS;
+
+            int x = Math.max(0, Math.min(32767, (int) Math.round(screenW * xRatio)));
+            int y1 = Math.max(0, Math.min(32767, (int) Math.round(screenH * startYRatio)));
+            int y2 = Math.max(0, Math.min(32767, (int) Math.round(screenH * endYRatio)));
+
+            ByteBuffer buf = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN);
+            buf.putShort((short) x);
+            buf.putShort((short) y1);
+            buf.putShort((short) x);
+            buf.putShort((short) y2);
+            buf.putShort((short) durationMs);
+
+            byte[] resp = execution != null ? execution.handleSwipe(buf.array()) : null;
+            return resp != null && resp.length > 0 && resp[0] == 0x01;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private int getPositiveInt(Object o, int fallback) {
+        if (o == null) {
+            return fallback;
+        }
+        try {
+            int v;
+            if (o instanceof Number) {
+                v = ((Number) o).intValue();
+            } else {
+                v = Integer.parseInt(String.valueOf(o).trim());
+            }
+            return v > 0 ? v : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private boolean sendTap(int x, int y) {
@@ -4416,4 +4486,3 @@ public class CortexFsmEngine {
         }
     }
 }
-
