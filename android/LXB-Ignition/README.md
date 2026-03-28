@@ -1,140 +1,72 @@
-﻿# LXB Server 部署指南
+# LXB-Ignition (Android On-Device Runtime)
 
-## 📦 快速开始
+`android/LXB-Ignition` is the Android runtime workspace of LXB-Framework.
 
-### 1. 一键启动服务器
+Current direction:
+
+1. APK-first user workflow
+2. On-device Java backend (`lxb-core`)
+3. Route-Then-Act FSM execution on Android device
+
+This module no longer treats WebConsole/Python runtime as the primary path.
+
+## Module Layout
+
+1. `app`
+- Android UI (Control / Tasks / Config / Logs)
+- Wireless ADB bootstrap and native start flow
+- Local TCP client to `lxb-core` (`127.0.0.1:<port>`)
+
+2. `lxb-core`
+- Device-side Java backend service
+- LXB-Link protocol dispatch
+- Cortex FSM (`INIT -> TASK_DECOMPOSE -> APP_RESOLVE -> ROUTE_PLAN -> ROUTING -> VISION_ACT -> FINISH/FAIL`)
+- Task queue and scheduler
+
+## Runtime Flow
+
+1. User submits task in APK
+2. App sends command to local `lxb-core` via LXB-Link
+3. `lxb-core` runs Cortex FSM and optional schedule pipeline
+4. Trace/status is pushed back to APK UI
+
+## Build
+
+From `android/LXB-Ignition`:
 
 ```bash
-.\run.bat
+./gradlew :app:assembleDebug
 ```
 
-这会自动完成：
-- ✅ 编译 Java 源代码
-- ✅ 打包成 JAR
-- ✅ 转换为 Android DEX 格式
-- ✅ 推送到设备并启动
+Windows:
 
-你会看到：
-```
-[LXB] Server starting...
-[Perception] Engine initialized
-[Execution] Engine initialized
-[LXB] Server listening on port 12345
+```bat
+gradlew.bat :app:assembleDebug
 ```
 
-**保持这个终端运行**。
+During app build, Gradle will also:
 
-### 2. 启动 Web 控制台（新终端）
+1. Build `lxb-core` dex jar (`:lxb-core:buildDex`)
+2. Build native starter binaries used by wireless bootstrap
 
-```bash
-cd E:\Project\LXB-Framework\web_console
-python app.py
-```
+## Run
 
-浏览器访问：http://localhost:5000
+Recommended runtime path:
 
-### 3. 连接并测试
+1. Install APK to device (Android 11+)
+2. In app `Control` tab, start Wireless ADB guide
+3. Complete pairing code input from notification
+4. Start native core (`app_process`) from app
+5. Configure LLM / map source in `Config`
+6. Submit chat task or create schedule task
 
-#### 方式 1：本地桥接测试（开发阶段）
+## Documentation Entry
 
-1. **配置 AVD 模拟器为桥接网络模式**
-2. **启动模拟器，查看 IP**：
+1. Project root quick start: `../../README.md`
+2. Docs index: `../../docs/README.md`
+3. On-device architecture: `../../docs/en/on_device_architecture.md` / `../../docs/zh/on_device_architecture.md`
 
-   ```bash
-   adb shell ip addr show eth0
-   # 例如：192.168.1.105
-   ```
+## Notes
 
-3. **Web Console 连接配置**：
-   - 主机地址：`192.168.1.105`（模拟器桥接 IP）
-   - 端口：`12345`
-   - 点击「连接」→「握手」→「TAP (500, 800)」
-
-#### 方式 2：Tailscale 组网（生产部署）
-
-1. **PC 和 Android 设备均安装 Tailscale**
-   - PC：<https://tailscale.com/download>
-   - Android：从 Google Play 安装 Tailscale 应用
-2. **加入同一 Tailscale 网络**（使用同一账号登录）
-3. **Android 设备查看 Tailscale IP**：
-
-   ```bash
-   adb shell ip addr show tailscale0
-   # 例如：100.64.1.23
-   ```
-
-4. **Web Console 连接配置**：
-   - 主机地址：`100.64.1.23`（Tailscale 虚拟 IP）
-   - 端口：`12345`
-   - 点击「连接」→「握手」→「TAP (500, 800)」
-
-> **Tailscale 优势**：
->
-> - ✅ 自动 NAT 穿透，无需公网 IP
-> - ✅ 端到端加密
-> - ✅ 支持 UDP，延迟极低
-> - ✅ 免费个人版支持 100 台设备
-> - ✅ 支持移动网络（4G/5G）和弱网环境
-
-## 🔧 文件说明
-
-### 主要脚本
-
-- **`build-and-deploy.bat`** - 编译、打包、转换 DEX、推送到设备
-- **`start-server.bat`** - 启动 LXB Server
-- **`deploy_and_run.bat`** - （已弃用）一键部署和运行
-
-### 构建产物
-
-- **`lxb-core.jar`** - Java 字节码 JAR（临时文件）
-- **`lxb-server.zip`** - Android DEX 格式（最终产物）
-
-### 设备路径
-
-- `/data/local/tmp/lxb-server.zip` - 服务器 DEX 文件
-
-## 📱 设备要求
-
-- Android 5.0+ (API 21+)
-- 开启 USB 调试
-- 无需 Root 权限（使用 `app_process`）
-
-## 🐛 常见问题
-
-### 问题 1：编译失败
-
-确保已安装 JDK 11+ 并配置 `gradle.properties`：
-```properties
-org.gradle.java.home=C:\\Program Files\\Java\\jdk-17
-```
-
-### 问题 2：设备连接失败
-
-检查设备连接：
-```bash
-adb devices
-```
-
-### 问题 3：服务器无法启动
-
-查看设备日志：
-```bash
-adb logcat | findstr LXB
-```
-
-## 🎯 下一步
-
-- [ ] 集成 UiAutomation（替换 mock 响应）
-- [ ] 实现截图功能
-- [ ] 添加 UI 树解析
-- [ ] 优化性能和错误处理
-
-## 📝 协议说明
-
-参考文档：
-- `docs/zh/lxb_link.md` - 协议规范
-- `docs/zh/lxb_server.md` - 服务器架构
-
----
-
-**注意**：当前版本使用 mock 数据，实际的屏幕操作和 UI 查询功能尚未实现。
+1. If docs conflict with code behavior, code is source of truth.
+2. Keep this README aligned with Android on-device runtime only.

@@ -67,6 +67,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.lxb_ignition.model.CoreRuntimeStatus
+import com.example.lxb_ignition.model.ScheduleSummary
+import com.example.lxb_ignition.model.TaskSummary
+import com.example.lxb_ignition.model.TaskRuntimeUiStatus
+import com.example.lxb_ignition.model.WirelessBootstrapStatus
 import com.example.lxb_ignition.ui.theme.LXBIgnitionTheme
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -263,7 +268,7 @@ fun TaskSessionCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun TaskRuntimeStatusCard(status: MainViewModel.TaskRuntimeUiStatus, modifier: Modifier = Modifier) {
+fun TaskRuntimeStatusCard(status: TaskRuntimeUiStatus, modifier: Modifier = Modifier) {
     val bgColor = if (status.running) Color(0xFF4CAF50) else Color(0xFF9E9E9E)
     val stateText = if (status.running) tr("RUNNING") else tr("IDLE")
     Card(
@@ -447,7 +452,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val scheduleRecordEnabled by viewModel.scheduleRecordEnabled.collectAsState()
     var page by rememberSaveable { mutableIntStateOf(0) }
     var editingScheduleId by rememberSaveable { mutableStateOf("") }
-    var selectedTask by remember { mutableStateOf<MainViewModel.TaskSummary?>(null) }
+    var selectedTask by remember { mutableStateOf<TaskSummary?>(null) }
 
     LaunchedEffect(Unit) {
         viewModel.refreshScheduleListOnDevice()
@@ -1000,7 +1005,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
 @Composable
 fun ScheduleRow(
-    schedule: MainViewModel.ScheduleSummary,
+    schedule: ScheduleSummary,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -1049,7 +1054,7 @@ fun ScheduleRow(
 }
 
 @Composable
-fun TaskRow(task: MainViewModel.TaskSummary, onClick: () -> Unit) {
+fun TaskRow(task: TaskSummary, onClick: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val bgColor = when (task.state) {
         "COMPLETED" -> scheme.surfaceVariant
@@ -1312,7 +1317,7 @@ fun ChatBubble(message: MainViewModel.ChatMessage) {
 }
 
 @Composable
-fun ProcessRuntimeCard(status: MainViewModel.CoreRuntimeStatus) {
+fun ProcessRuntimeCard(status: CoreRuntimeStatus) {
     val (bgColor, label) = if (status.ready) {
         Color(0xFF4CAF50) to tr("Core Connected")
     } else {
@@ -1389,7 +1394,7 @@ fun ProcessControlRow(
 
 @Composable
 fun WirelessBootstrapCard(
-    status: MainViewModel.WirelessBootstrapStatus,
+    status: WirelessBootstrapStatus,
     onStartGuide: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
