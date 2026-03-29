@@ -177,10 +177,14 @@ fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
 fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val coreRuntime by viewModel.coreRuntimeStatus.collectAsState()
     val wireless by viewModel.wirelessBootstrapStatus.collectAsState()
+    val rootAvailable by viewModel.rootAvailable.collectAsState()
+    val rootDetail by viewModel.rootDetail.collectAsState()
+    val scrollState = rememberScrollState()
 
     Column(
         modifier = modifier
             .fillMaxSize()
+            .verticalScroll(scrollState)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -188,9 +192,17 @@ fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             status = coreRuntime
         )
 
-        ProcessControlRow(
-            coreReady = coreRuntime.ready,
-            onStartNative = { viewModel.startServerWithNative() },
+        RootDirectStartCard(
+            rootAvailable = rootAvailable,
+            rootDetail = rootDetail,
+            onStartRoot = { viewModel.startServerWithRootDirect() }
+        )
+
+        AdbStartCard(
+            onStartAdb = { viewModel.startServerWithNative() }
+        )
+
+        UnifiedStopCard(
             onStop = { viewModel.stopServerProcess() },
             onRefreshState = { viewModel.refreshCoreRuntimeStatusNow() }
         )
@@ -378,6 +390,20 @@ private val ZhMap = mapOf(
     "Core Connected" to "Core 已连接",
     "Core Disconnected" to "Core 未连接",
     "Start Native" to "原生启动",
+    "ADB start" to "ADB 启动",
+    "Use Wireless ADB bootstrap path. Pair once, then tap start." to "使用无线 ADB 引导路径，先完成配对，再点击启动。",
+    "Start via ADB" to "通过 ADB 启动",
+    "Root direct start" to "Root 直启",
+    "Root start" to "Root 启动",
+    "For rooted phones: start lxb-core directly via su. No Wireless ADB guide required." to "Root 手机可直接通过 su 启动 lxb-core，无需走无线 ADB 引导。",
+    "Requires root permission grant in superuser manager." to "需要在超级用户管理器中授权 Root 权限。",
+    "Start via Root" to "通过 Root 启动",
+    "Root available" to "Root 可用",
+    "Root unavailable" to "Root 不可用",
+    "Check Root" to "检测 Root",
+    "Unified stop" to "统一停止",
+    "Stop core process regardless of start mode." to "无论通过哪种方式启动，都用这里统一停止 Core 进程。",
+    "Stop Core Process" to "停止 Core 进程",
     "Refresh Core State" to "刷新 Core 状态",
     "Wireless bootstrap" to "无线 ADB 引导",
     "Wireless ADB bootstrap path (native). Start guide, then submit pairing code from notification." to "无线 ADB 引导路径（原生）。点击开始引导后，在通知栏仅输入配对码。",
@@ -387,7 +413,7 @@ private val ZhMap = mapOf(
     "3. In Developer options, find Wireless debugging and turn it on." to "3. 在开发者选项中找到“无线调试”并打开。",
     "4. Tap \"Pair device with pairing code\"." to "4. 点击“使用配对码配对设备”。",
     "5. After the pairing code appears, enter it in this app's notification input." to "5. 看到配对码后，在本应用通知栏输入框中填入配对码。",
-    "6. Return to the app and check whether core starts automatically. If not, tap \"Start Native\" manually." to "6. 回到应用，观察是否自动启动成功；如果没有，手动点击“原生启动”。",
+    "6. Return to the app and check whether core starts automatically. If not, tap \"Start via ADB\" manually." to "6. 回到应用，观察是否自动启动成功；如果没有，手动点击“通过 ADB 启动”。",
     "Open Developer Options (Start Guide)" to "打开开发者选项（开始引导）",
     "State" to "状态",
     "Start" to "启动",
@@ -1373,58 +1399,70 @@ fun ProcessRuntimeCard(status: CoreRuntimeStatus) {
 }
 
 @Composable
-fun ProcessControlRow(
-    coreReady: Boolean,
-    onStartNative: () -> Unit,
+fun AdbStartCard(
+    onStartAdb: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(tr("ADB start"), style = MaterialTheme.typography.titleSmall)
+            Text(
+                tr("Use Wireless ADB bootstrap path. Pair once, then tap start."),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                fontSize = 12.sp
+            )
+            OutlinedButton(
+                onClick = onStartAdb,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(tr("Start via ADB"), fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun UnifiedStopCard(
     onStop: () -> Unit,
     onRefreshState: () -> Unit
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            OutlinedButton(
-                onClick = onStartNative,
-                enabled = true,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(36.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 8.dp,
-                    vertical = 4.dp
-                )
-            ) {
-                Text(tr("Start Native"), fontSize = 12.sp)
-            }
+            Text(tr("Unified stop"), style = MaterialTheme.typography.titleSmall)
+            Text(
+                tr("Stop core process regardless of start mode."),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                fontSize = 12.sp
+            )
             OutlinedButton(
                 onClick = onStop,
-                enabled = coreReady,
                 modifier = Modifier
-                    .weight(1f)
+                    .fillMaxWidth()
                     .height(36.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(
                     horizontal = 8.dp,
                     vertical = 4.dp
                 )
             ) {
-                Text(tr("Stop"), fontSize = 12.sp)
+                Text(tr("Stop Core Process"), fontSize = 12.sp)
             }
-        }
-        OutlinedButton(
-            onClick = onRefreshState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(34.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                horizontal = 8.dp,
-                vertical = 4.dp
-            )
-        ) {
-            Text(tr("Refresh Core State"), fontSize = 12.sp)
+            OutlinedButton(
+                onClick = onRefreshState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(34.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 8.dp,
+                    vertical = 4.dp
+                )
+            ) {
+                Text(tr("Refresh Core State"), fontSize = 12.sp)
+            }
         }
     }
 }
@@ -1472,7 +1510,7 @@ fun WirelessBootstrapCard(
                     fontSize = 12.sp
                 )
                 Text(
-                    tr("6. Return to the app and check whether core starts automatically. If not, tap \"Start Native\" manually."),
+                    tr("6. Return to the app and check whether core starts automatically. If not, tap \"Start via ADB\" manually."),
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
                     fontSize = 12.sp
                 )
@@ -1488,6 +1526,44 @@ fun WirelessBootstrapCard(
                 enabled = !status.running
             ) {
                 Text(tr("Open Developer Options (Start Guide)"), fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun RootDirectStartCard(
+    rootAvailable: Boolean,
+    rootDetail: String,
+    onStartRoot: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(tr("Root start"), style = MaterialTheme.typography.titleSmall)
+            Text(
+                tr("For rooted phones: start lxb-core directly via su. No Wireless ADB guide required."),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                fontSize = 12.sp
+            )
+            Text(
+                tr("Requires root permission grant in superuser manager."),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                fontSize = 12.sp
+            )
+            Text(
+                "${tr("State")}: ${if (rootAvailable) tr("Root available") else tr("Root unavailable")} ($rootDetail)",
+                color = if (rootAvailable) Color(0xFF2E7D32) else Color(0xFFE65100),
+                fontSize = 12.sp
+            )
+            OutlinedButton(
+                onClick = onStartRoot,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = rootAvailable
+            ) {
+                Text(tr("Start via Root"), fontSize = 12.sp)
             }
         }
     }
