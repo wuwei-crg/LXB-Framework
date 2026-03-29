@@ -1,27 +1,42 @@
-﻿# LXB-Framework
+<div align="center">
 
-<img src="resources/logo.jpg" alt="LXB Logo" width="180" />
+<img src="resources/logo.jpg" alt="LXB Logo" width="160" />
 
-[English](README.en.md) | [中文](README.md)
+# LXB-Framework
 
-An experimental Android automation framework designed for repetitive, linear daily tasks.
+**An experimental Android automation framework for repetitive, linear daily tasks**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Android 11+](https://img.shields.io/badge/Android-11%2B-34A853?logo=android&logoColor=white)]()
+[![Latest Release](https://img.shields.io/github/v/release/wuwei-crg/LXB-Framework?label=Release)](https://github.com/wuwei-crg/LXB-Framework/releases)
+
+**English** | [中文](README.md)
+
+</div>
+
 Instead of letting the model roam freely, LXB-Framework uses a **Route-Then-Act** pipeline: a pre-built navigation map handles deterministic page routing, then a VLM takes over to handle the actual on-screen work.
+
+---
 
 ## Software Preview & Features
 
 ![Software preview](resources/software_en.png)
 
-- **Chat task mode**: type a one-time natural language request and execute immediately.
-  - Example: `Help me order one large oat latte from the coffee app.`
-- **Scheduled task mode**: set a trigger time (one-shot / daily / weekly) and let the daemon execute automatically, even when the screen is off or the app is killed.
-  - Example: `Every weekday at 08:30, place my usual coffee order.`
-- **Playbook fallback**: for apps without a navigation map, write a step-by-step playbook and the pipeline will follow it instead.
+Built on this pipeline design, the framework currently offers three task execution modes:
+
+| Mode | Description | Example |
+|------|-------------|---------|
+| **Chat Task** | Type a one-time natural language request and execute immediately | `Help me order one large oat latte from the coffee app` |
+| **Scheduled Task** | Set a trigger time (one-shot / daily / weekly) and let the daemon execute automatically | `Every weekday at 08:30, place my usual coffee order` |
+| **Playbook Fallback** | Write a step-by-step playbook for apps without a navigation map | — |
 
 ## How It Works
 
-- **Route-Then-Act pipeline**: tasks are split into a deterministic routing phase (map-based, no vision) and a vision-based action phase (VLM handles dynamic UI).
-- **FSM orchestration**: a state machine (INIT → TASK_DECOMPOSE → APP_RESOLVE → ROUTE_PLAN → ROUTING → VISION_ACT → FINISH/FAIL) keeps execution structured and traceable.
-- **`app_process` daemon**: the backend runs as a shell-level process independent of the Android app lifecycle, enabling reliable background and scheduled execution without relying on Android's fragile service keep-alive mechanisms.
+The Route-Then-Act pipeline is powered by three core mechanisms working together:
+
+- **Pipeline split** — tasks are divided into a deterministic routing phase (map-based, no vision) and a vision-based action phase (VLM handles dynamic UI).
+- **FSM orchestration** — a state machine (INIT → TASK_DECOMPOSE → APP_RESOLVE → ROUTE_PLAN → ROUTING → VISION_ACT → FINISH/FAIL) keeps execution structured and traceable.
+- **`app_process` daemon** — the backend runs as a shell-level process independent of the Android app lifecycle, enabling reliable background and scheduled execution without relying on Android's fragile service keep-alive mechanisms.
 
 ![Overall architecture](resources/architecture_overall.png)
 
@@ -29,25 +44,47 @@ Instead of letting the model roam freely, LXB-Framework uses a **Route-Then-Act*
 
 ## Requirements
 
+Before getting started, make sure you have the following:
+
 - Android **11 (API 30)** or higher (real device recommended; emulators may trigger app detection)
 - **Developer Options** and **Wireless Debugging** enabled on the device (no root, no extra apps required)
 - An **OpenAI-compatible** LLM/VLM endpoint (`/v1/chat/completions` format); any model provider works
 
 ## Quick Start
 
-1. **Enable Wireless Debugging** on the device: go to `Settings → Developer Options → Wireless Debugging`.
-2. **Install the APK**: download the latest `lxb-ignition-vX.Y.Z.apk` from [Releases](https://github.com/wuwei-crg/LXB-Framework/releases) and install it.
-3. **Pair the device**: open LXB-Ignition and follow the in-app pairing guide. The device screen will display a 6-digit pairing code — enter it when prompted. Subsequent launches reconnect automatically.
-4. **Start the daemon**: after pairing succeeds, the app automatically pushes the backend DEX to the device and starts the daemon via `app_process`. The status indicator will change to **Running**.
-5. **Configure LLM**: go to the `Config` tab and fill in:
-   - **API Base URL** — your model endpoint (OpenAI-compatible)
-   - **API Key** — the corresponding key
-   - **Model** — model name, e.g. `gpt-4o-mini`, `qwen-plus`
-6. **(Optional) Sync maps**: in `Config`, set the MapRepo URL to enable automatic stable map downloads. Without maps, the framework falls back to pure vision mode.
+Once the requirements are met, follow these steps to get up and running:
+
+1. **Enable Developer Options & Debugging**
+   - Go to `Settings → Developer Options` and enable both **USB debugging** and **Wireless debugging**
+   - **USB debugging must be enabled; otherwise the daemon process cannot stay alive**
+
+2. **Check ROM-specific Developer Options** (required on some devices)
+
+   | ROM | Action |
+   |-----|--------|
+   | MIUI / HyperOS (Xiaomi, POCO) | Enable "USB debugging (Security settings)" — a separate toggle from "USB debugging" |
+   | ColorOS (OPPO / OnePlus) | Disable "Permission monitoring" |
+   | Flyme (Meizu) | Disable "Flyme payment protection" |
+
+3. **Install the APK** — download the latest `lxb-ignition-vX.Y.Z.apk` from [Releases](https://github.com/wuwei-crg/LXB-Framework/releases) and install it
+
+4. **Pair the device** — open LXB-Ignition and follow the in-app pairing guide. The device screen will display a 6-digit pairing code; enter it when prompted. Subsequent launches reconnect automatically
+
+5. **Start the daemon** — after pairing succeeds, the app automatically pushes the backend DEX to the device and starts the daemon via `app_process`. The status indicator will change to **Running**
+
+6. **Configure LLM** — go to the `Config` tab and fill in:
+
+   | Parameter | Description | Example |
+   |-----------|-------------|---------|
+   | API Base URL | Model endpoint (OpenAI-compatible) | `https://api.openai.com/v1` |
+   | API Key | Corresponding API key | `sk-...` |
+   | Model | Model name | `gpt-4o-mini`, `qwen-plus` |
+
+7. **(Optional) Sync maps** — in `Config`, set the MapRepo URL to enable automatic stable map downloads. Without maps, the framework falls back to pure vision mode
 
 ## Running Your First Task
 
-Once set up, go to the home screen and type your request in the chat box, for example:
+With everything set up, type your request in the home screen chat box to launch a task, for example:
 
 ```
 Open Bilibili and post a moment with content "test" and title "test"
@@ -58,7 +95,8 @@ The interface will display the current FSM state in real time as the task execut
 
 ## Scheduled Tasks
 
-Open the `Tasks` tab to create a scheduled task:
+Beyond manual triggering, the framework also supports automatic scheduled execution. Open the `Tasks` tab to create a scheduled task:
+
 - Set a trigger time (one-shot, daily, or weekly)
 - Specify the target app package name
 - Write the task instruction
@@ -68,7 +106,7 @@ The daemon's `app_process` design ensures scheduled tasks fire on time even when
 
 ## Building Maps for New Apps
 
-Navigation maps are built with [LXB-MapBuilder](https://github.com/wuwei-crg/LXB-MapBuilder) and distributed via [LXB-MapRepo](https://github.com/wuwei-crg/LXB-MapRepo). See the MapBuilder README for the full build workflow. Pre-built stable maps are available in MapRepo and can be synced directly from the `Config` tab.
+As mentioned earlier, navigation maps are the foundation of the routing phase in the Route-Then-Act pipeline. Maps are built with [LXB-MapBuilder](https://github.com/wuwei-crg/LXB-MapBuilder) and distributed via [LXB-MapRepo](https://github.com/wuwei-crg/LXB-MapRepo). See the MapBuilder README for the full build workflow. Pre-built stable maps can be synced directly from the `Config` tab via the MapRepo URL.
 
 ## Usage Tips
 
@@ -77,10 +115,12 @@ Navigation maps are built with [LXB-MapBuilder](https://github.com/wuwei-crg/LXB
 
 ## Related Repositories
 
-- [LXB-MapBuilder](https://github.com/wuwei-crg/LXB-MapBuilder) — map construction and publishing tool
-- [LXB-MapRepo](https://github.com/wuwei-crg/LXB-MapRepo) — stable/candidate navigation map artifacts
+| Repository | Description |
+|------------|-------------|
+| [LXB-MapBuilder](https://github.com/wuwei-crg/LXB-MapBuilder) | Map construction and publishing tool |
+| [LXB-MapRepo](https://github.com/wuwei-crg/LXB-MapRepo) | Stable / candidate navigation map artifacts |
 
-## Acknowledgement
+## Acknowledgements
 
 The `app_process` daemon design is inspired by [Shizuku](https://github.com/RikkaApps/Shizuku). LXB-Framework implements its own Wireless ADB pairing and connection and does not depend on Shizuku at runtime.
 This project is also shared with and supported by the [LINUX DO community](https://linux.do/).
@@ -94,4 +134,3 @@ MIT. See [LICENSE](LICENSE).
 ## Star Trend
 
 [![Star History Chart](https://api.star-history.com/svg?repos=wuwei-crg/LXB-Framework&type=Date)](https://star-history.com/#wuwei-crg/LXB-Framework&Date)
-
