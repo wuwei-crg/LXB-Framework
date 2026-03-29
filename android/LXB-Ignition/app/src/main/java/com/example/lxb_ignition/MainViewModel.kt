@@ -206,6 +206,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _wirelessBootstrapStatus = MutableStateFlow(WirelessBootstrapStatus())
     val wirelessBootstrapStatus: StateFlow<WirelessBootstrapStatus> = _wirelessBootstrapStatus.asStateFlow()
+    private val _rootAvailable = MutableStateFlow(false)
+    val rootAvailable: StateFlow<Boolean> = _rootAvailable.asStateFlow()
+    private val _rootDetail = MutableStateFlow("not checked")
+    val rootDetail: StateFlow<String> = _rootDetail.asStateFlow()
 
     // Tasks tab: recent task list (lightweight snapshot).
     private val _taskList = MutableStateFlow<List<TaskSummary>>(emptyList())
@@ -278,6 +282,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ).getOrElse { "startup stable sync skipped: ${it.message}" }
             appendLog("[MAP] $msg")
         }
+        refreshRootAvailability()
     }
 
     fun startServerWithNative() {
@@ -291,8 +296,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         sendWirelessBootstrapAction(WirelessAdbBootstrapService.ACTION_START_CORE_NATIVE)
     }
 
+    fun startServerWithRootDirect() {
+        if (!_rootAvailable.value) {
+            appendSystemMessage("Root is not available on this device.")
+            return
+        }
+        val port = currentLxbPortOrNull() ?: run {
+            appendLog("Invalid lxb-core port")
+            appendSystemMessage("Invalid lxb-core port, please check TCP port in Config tab.")
+            return
+        }
+        saveConfig()
+        appendLog("[CORE] Root-direct start requested on port $port")
+        sendWirelessBootstrapAction(WirelessAdbBootstrapService.ACTION_START_CORE_ROOT_DIRECT)
+    }
+
+    fun refreshRootAvailability() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val (ok, detail) = detectRootAvailability()
+            _rootAvailable.value = ok
+            _rootDetail.value = detail
+        }
+    }
+
+    private fun detectRootAvailability(): Pair<Boolean, String> {
+        return runCatching {
+            val process = ProcessBuilder("su", "-c", "id -u")
+                .redirectErrorStream(true)
+                .start()
+            val finished = process.waitFor(1500, TimeUnit.MILLISECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                return@runCatching Pair(false, "check timeout")
+            }
+            val output = runCatching {
+                process.inputStream.bufferedReader().use { it.readText() }
+            }.getOrDefault("").trim()
+            val first = output.lineSequence().firstOrNull()?.trim().orEmpty()
+            val ok = process.exitValue() == 0 && first == "0"
+            if (ok) {
+                Pair(true, "su uid=0")
+            } else {
+                Pair(false, if (output.isBlank()) "su unavailable" else output.take(80))
+            }
+        }.getOrElse { e ->
+            Pair(false, e.message ?: e.javaClass.simpleName)
+        }
+    }
+
     fun stopServerProcess() {
-        sendWirelessBootstrapAction(WirelessAdbBootstrapService.ACTION_STOP_CORE_NATIVE)
+        sendWirelessBootstrapAction(WirelessAdbBootstrapService.ACTION_STOP_CORE_UNIFIED)
     }
 
     // Backward-compatible aliases used by old UI call sites.
@@ -322,6 +375,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (action == WirelessAdbBootstrapService.ACTION_STOP
                 || action == WirelessAdbBootstrapService.ACTION_STOP_CORE_NATIVE
+                || action == WirelessAdbBootstrapService.ACTION_STOP_CORE_UNIFIED
             ) {
                 app.startService(intent)
             } else {

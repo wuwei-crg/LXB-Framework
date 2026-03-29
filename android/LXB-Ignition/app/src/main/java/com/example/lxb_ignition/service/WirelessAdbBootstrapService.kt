@@ -48,7 +48,9 @@ class WirelessAdbBootstrapService : Service() {
         const val ACTION_START_GUIDE = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_START_GUIDE"
         const val ACTION_STOP = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_STOP"
         const val ACTION_START_CORE_NATIVE = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_START_CORE_NATIVE"
+        const val ACTION_START_CORE_ROOT_DIRECT = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_START_CORE_ROOT_DIRECT"
         const val ACTION_STOP_CORE_NATIVE = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_STOP_CORE_NATIVE"
+        const val ACTION_STOP_CORE_UNIFIED = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_STOP_CORE_UNIFIED"
         const val ACTION_OPEN_DEV_OPTIONS = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_OPEN_DEV_OPTIONS"
         const val ACTION_SUBMIT_PAIRING = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_SUBMIT_PAIRING"
 
@@ -74,6 +76,7 @@ class WirelessAdbBootstrapService : Service() {
         private const val WATCHDOG_INTERVAL_MS = 12_000L
         private const val START_RETRY_MAX_ATTEMPTS = 12
         private const val START_RETRY_INTERVAL_MS = 5_000L
+        private const val CONNECT_ENDPOINT_WAIT_MS = 2_500L
 
         private const val PAIRING_SERVICE_TYPE = "_adb-tls-pairing._tcp."
         private const val CONNECT_SERVICE_TYPE = "_adb-tls-connect._tcp."
@@ -145,7 +148,9 @@ class WirelessAdbBootstrapService : Service() {
                 }
             }
             ACTION_START_CORE_NATIVE -> startCoreNative()
+            ACTION_START_CORE_ROOT_DIRECT -> startCoreRootDirect()
             ACTION_STOP_CORE_NATIVE -> stopCoreNative()
+            ACTION_STOP_CORE_UNIFIED -> stopCoreUnified()
             ACTION_STOP -> stopBootstrap()
             ACTION_OPEN_DEV_OPTIONS -> openSettings(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
             ACTION_SUBMIT_PAIRING -> {
@@ -217,20 +222,28 @@ class WirelessAdbBootstrapService : Service() {
                 val port = getConfiguredPort()
                 finishBootstrap("RUNNING", "Native start succeeded. lxb-core is listening on port $port.")
             } else {
-                if (res.detail.contains("no saved endpoint")) {
-                    finishBootstrap(
-                        "FAILED",
-                        "Native start failed: ${res.detail}"
-                    )
-                    return@launch
-                }
-                openWirelessDebuggingSettings()
                 setState(
                     "WAIT_WIRELESS_DEBUGGING",
-                    "Native start failed. Enable Wireless debugging; will auto-retry..."
+                    "Native start failed. Auto retrying with saved/discovered endpoint..."
                 )
                 updateNotification()
                 scheduleStartRetry()
+            }
+        }
+    }
+
+    private fun startCoreRootDirect() {
+        ensureForegroundRunning()
+        startRetryJob?.cancel()
+        setState("STARTING_CORE_ROOT", "Starting core via root...")
+        updateNotification()
+        scope.launch {
+            val port = getConfiguredPort()
+            val res = launchCoreWithRootVerification(port)
+            if (res.ok) {
+                finishBootstrap("RUNNING", "Root start succeeded. lxb-core is listening on port $port.")
+            } else {
+                finishBootstrap("FAILED", "Root start failed: ${res.detail}")
             }
         }
     }
@@ -260,6 +273,59 @@ class WirelessAdbBootstrapService : Service() {
         }
     }
 
+    private fun stopCoreUnified() {
+        ensureForegroundRunning()
+        startRetryJob?.cancel()
+        setState("STOPPING", "Stopping core process (unified)...")
+        updateNotification()
+        scope.launch {
+            val details = ArrayList<String>(3)
+            val port = getConfiguredPort()
+            var stopped = false
+
+            val rootStop = stopCoreViaRootDirect()
+            details.add("root=${rootStop.second}")
+            if (rootStop.first) {
+                stopped = waitLocalPortClosed(port, 3500L, 200L) || !isCoreReachableLocal()
+            }
+
+            if (!stopped) {
+                val endpointStop = stopCoreViaSavedEndpoint()
+                details.add("endpoint=$endpointStop")
+                if (endpointStop) {
+                    stopped = waitLocalPortClosed(port, 3500L, 200L) || !isCoreReachableLocal()
+                }
+            }
+
+            if (stopped || !isCoreReachableLocal()) {
+                stopBootstrap()
+            } else {
+                running = false
+                watchdogJob?.cancel()
+                setState("IDLE", "Unified stop failed: ${details.joinToString("; ")}")
+                runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                stopSelf()
+            }
+        }
+    }
+
+    private fun stopCoreViaRootDirect(): Pair<Boolean, String> {
+        val starterStop = runStarterStopViaRoot()
+        if (starterStop.ok) {
+            return Pair(true, starterStop.detail)
+        }
+        val fallbackCmd = "for p in ${'$'}(ps -A | grep -E 'lxb_core|com\\.lxb\\.server\\.Main' | grep -v grep | awk '{print ${'$'}2}'); do kill -9 ${'$'}p; done; true"
+        val fallback = runRootShellCommand(
+            fallbackCmd,
+            8000
+        )
+        return if (fallback.ok) {
+            Pair(true, "fallback_kill_ok: ${fallback.shortOutput()}")
+        } else {
+            Pair(false, "starter=${starterStop.detail}; fallback=${fallback.shortOutput()}")
+        }
+    }
+
     private fun stopBootstrap() {
         stopDiscovery()
         watchdogJob?.cancel()
@@ -273,12 +339,21 @@ class WirelessAdbBootstrapService : Service() {
     private fun scheduleStartRetry() {
         startRetryJob?.cancel()
         startRetryJob = scope.launch {
+            var promptedSettings = false
             for (attempt in 1..START_RETRY_MAX_ATTEMPTS) {
                 if (!running) return@launch
                 delay(START_RETRY_INTERVAL_MS)
+                if (!promptedSettings && attempt >= 4) {
+                    openWirelessDebuggingSettings()
+                    promptedSettings = true
+                }
                 setState(
                     "WAIT_WIRELESS_DEBUGGING",
-                    "Waiting Wireless debugging... retry $attempt/$START_RETRY_MAX_ATTEMPTS"
+                    if (promptedSettings) {
+                        "Waiting Wireless debugging... retry $attempt/$START_RETRY_MAX_ATTEMPTS"
+                    } else {
+                        "Auto reconnecting... retry $attempt/$START_RETRY_MAX_ATTEMPTS"
+                    }
                 )
                 updateNotification()
                 val res = relaunchCoreViaSavedEndpoint()
@@ -702,17 +777,21 @@ class WirelessAdbBootstrapService : Service() {
     }
 
     private fun relaunchCoreViaSavedEndpoint(): RelaunchResult {
-        val ep = loadWirelessEndpoint() ?: return RelaunchResult(
-            false,
-            "no saved endpoint. run wireless guide and pair once."
-        )
+        val ep = loadWirelessEndpoint()
         startDiscovery()
-        Thread.sleep(700L)
-        val connectDiscovered = latestConnectEndpoint
+        val connectDiscovered = waitForConnectEndpoint(CONNECT_ENDPOINT_WAIT_MS)
+        val pairingDiscovered = latestPairingEndpoint
 
         val endpointCandidates = linkedSetOf<Endpoint>()
-        endpointCandidates.add(ep)
+        if (ep != null) endpointCandidates.add(ep)
         if (connectDiscovered != null) endpointCandidates.add(connectDiscovered)
+        if (pairingDiscovered != null) endpointCandidates.add(Endpoint(pairingDiscovered.host, 5555))
+        if (endpointCandidates.isEmpty()) {
+            return RelaunchResult(
+                false,
+                "no endpoint available. keep wireless debugging on, ensure same Wi-Fi, then retry."
+            )
+        }
 
         val manager = WirelessAdbConnectionManager(applicationContext)
         manager.setTimeout(10, TimeUnit.SECONDS)
@@ -749,6 +828,16 @@ class WirelessAdbBootstrapService : Service() {
         } finally {
             runCatching { manager.close() }
         }
+    }
+
+    private fun waitForConnectEndpoint(timeoutMs: Long): Endpoint? {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (SystemClock.uptimeMillis() < deadline) {
+            val ep = latestConnectEndpoint
+            if (ep != null) return ep
+            Thread.sleep(100L)
+        }
+        return latestConnectEndpoint
     }
 
     private fun launchCoreWithVerification(
@@ -1093,6 +1182,194 @@ class WirelessAdbBootstrapService : Service() {
         val decode = runShellCommand(manager, decodeCmd, 15000)
         if (!decode.ok) return DeployResult(false, "decode failed: ${decode.shortOutput()}")
         return DeployResult(true, decode.shortOutput())
+    }
+
+    private fun launchCoreWithRootVerification(port: Int): RelaunchResult {
+        val starterAsset = resolveStarterAssetForDevice()
+            ?: return RelaunchResult(false, unsupportedAbiDetail())
+        val deploy = deployCoreJarViaRoot()
+        if (!deploy.ok) {
+            return RelaunchResult(false, "deploy_failed=${deploy.detail}")
+        }
+        val starterDeploy = deployStarterBinaryViaRoot(starterAsset)
+        if (!starterDeploy.ok) {
+            return RelaunchResult(
+                false,
+                "starter_deploy_failed abi=${starterAsset.abi} asset=${starterAsset.assetName} detail=${starterDeploy.detail}"
+            )
+        }
+        val appLabelsDeploy = deployAppLabelsSnapshotViaRoot()
+        val appLabelsNote = if (appLabelsDeploy.ok) {
+            "labels_ok"
+        } else {
+            "labels_warn=${appLabelsDeploy.detail}"
+        }
+        val errors = ArrayList<String>(3)
+        for (attempt in 1..2) {
+            runStarterStopViaRoot()
+            waitLocalPortClosed(port, 2500L, 200L)
+            Thread.sleep(350L)
+            val launch = runStarterStartViaRoot(port)
+            if (waitLocalPortReady(port, 3500L, 200L)) {
+                return RelaunchResult(true, "ok;$appLabelsNote")
+            }
+            if (!launch.ok) {
+                errors.add("a$attempt:starter_start_failed ${launch.detail}")
+                continue
+            }
+            if (waitLocalPortReady(port, 7000L, 250L)) {
+                return RelaunchResult(true, "ok;$appLabelsNote")
+            }
+            val tail = runRootShellCommand("tail -n 40 $REMOTE_LOG_PATH", 8000)
+            val ps = runRootShellCommand(
+                "ps -A | grep -E 'lxb_core|com\\.lxb\\.server\\.Main|app_process' | grep -v grep | head -n 12 || true",
+                8000
+            )
+            errors.add(
+                "a$attempt:port_not_ready starter=${launch.detail} ps=${ps.shortOutput()} log=${tail.shortOutput()}"
+            )
+        }
+        return RelaunchResult(false, errors.joinToString(" | "))
+    }
+
+    private fun runStarterStartViaRoot(port: Int): StarterResult {
+        val cmd = buildStarterCommand("start", port)
+        val res = runRootShellCommand(cmd, 15000)
+        return parseStarterResult(res)
+    }
+
+    private fun runStarterStopViaRoot(): StarterResult {
+        val cmd = buildStarterCommand("stop", getConfiguredPort())
+        val res = runRootShellCommand(cmd, 12000)
+        return parseStarterResult(res)
+    }
+
+    private fun deployCoreJarViaRoot(): DeployResult {
+        return deployAssetToRemoteViaRoot(
+            assetName = "lxb-core-dex.jar",
+            remotePath = REMOTE_JAR_PATH,
+            executable = false
+        )
+    }
+
+    private fun deployStarterBinaryViaRoot(starterAsset: StarterAsset): DeployResult {
+        return deployAssetToRemoteViaRoot(
+            assetName = starterAsset.assetName,
+            remotePath = REMOTE_STARTER_PATH,
+            executable = true
+        )
+    }
+
+    private fun deployAppLabelsSnapshotViaRoot(): DeployResult {
+        val labelsBytes = runCatching { buildAppLabelsTsv() }.getOrElse { e ->
+            return DeployResult(false, "build_app_labels_failed: ${e.message}")
+        }
+        if (labelsBytes.isEmpty()) {
+            return DeployResult(false, "build_app_labels_empty")
+        }
+        return deployBytesToRemoteViaRoot(
+            bytes = labelsBytes,
+            remotePath = REMOTE_APP_LABELS_PATH,
+            executable = false
+        )
+    }
+
+    private fun deployAssetToRemoteViaRoot(
+        assetName: String,
+        remotePath: String,
+        executable: Boolean
+    ): DeployResult {
+        val bytes = runCatching { assets.open(assetName).use { it.readBytes() } }.getOrElse { e ->
+            return DeployResult(false, "asset_open_failed($assetName): ${e.message}")
+        }
+        if (bytes.isEmpty()) {
+            return DeployResult(false, "asset_empty($assetName)")
+        }
+        return deployBytesToRemoteViaRoot(
+            bytes = bytes,
+            remotePath = remotePath,
+            executable = executable
+        )
+    }
+
+    private fun deployBytesToRemoteViaRoot(
+        bytes: ByteArray,
+        remotePath: String,
+        executable: Boolean
+    ): DeployResult {
+        val init = runRootShellCommand("rm -f ${remotePath}.b64 $remotePath", 7000)
+        if (!init.ok) return DeployResult(false, "init failed: ${init.shortOutput()}")
+
+        val write = writeBytesViaRoot(bytes, remotePath, 20_000)
+        if (!write.ok) return write
+
+        val chmodMode = if (executable) "700" else "600"
+        val finalCmd = "chmod $chmodMode $remotePath && ls -l $remotePath"
+        val chmod = runRootShellCommand(finalCmd, 8000)
+        if (!chmod.ok) return DeployResult(false, "chmod failed: ${chmod.shortOutput()}")
+        return DeployResult(true, chmod.shortOutput())
+    }
+
+    private fun writeBytesViaRoot(
+        bytes: ByteArray,
+        remotePath: String,
+        timeoutMs: Long
+    ): DeployResult {
+        return runCatching {
+            val process = ProcessBuilder(
+                "su",
+                "-c",
+                "cat > ${shellQuote(remotePath)}"
+            )
+                .redirectErrorStream(true)
+                .start()
+
+            process.outputStream.use { os ->
+                os.write(bytes)
+                os.flush()
+            }
+
+            val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                return@runCatching DeployResult(false, "root_write_timeout")
+            }
+            val output = runCatching {
+                process.inputStream.bufferedReader().use { it.readText() }
+            }.getOrDefault("")
+            val code = process.exitValue()
+            if (code != 0) {
+                return@runCatching DeployResult(
+                    false,
+                    "root_write_fail($code): ${
+                        output.replace('\n', ' ').replace('\r', ' ').trim().take(180)
+                    }"
+                )
+            }
+            DeployResult(true, "root_write_ok")
+        }.getOrElse { e ->
+            DeployResult(false, "root_write_exception: ${e.message}")
+        }
+    }
+
+    private fun runRootShellCommand(command: String, timeoutMs: Long): ShellExecResult {
+        return runCatching {
+            val process = ProcessBuilder("su", "-c", command)
+                .redirectErrorStream(true)
+                .start()
+            val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                return@runCatching ShellExecResult(false, -1, "timeout")
+            }
+            val output = runCatching {
+                process.inputStream.bufferedReader().use { it.readText() }
+            }.getOrDefault("")
+            val code = process.exitValue()
+            ShellExecResult(code == 0, code, output.trim())
+        }.getOrElse { e ->
+            ShellExecResult(false, -1, e.message ?: "root shell exec error")
+        }
     }
 
     private fun buildAppLabelsTsv(): ByteArray {

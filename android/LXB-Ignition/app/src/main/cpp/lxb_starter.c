@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -59,6 +60,14 @@ static bool is_digits(const char *s) {
     return true;
 }
 
+static bool parse_port(const char *s, int *out_port) {
+    if (!s || !*s || !is_digits(s)) return false;
+    long v = strtol(s, NULL, 10);
+    if (v < 1 || v > 65535) return false;
+    if (out_port) *out_port = (int) v;
+    return true;
+}
+
 static int read_cmdline_token(int pid, char *out, size_t out_size) {
     if (!out || out_size == 0) return -1;
     out[0] = '\0';
@@ -77,6 +86,50 @@ static int read_cmdline_token(int pid, char *out, size_t out_size) {
         }
     }
     return 0;
+}
+
+static int read_cmdline_raw(int pid, char *out, size_t out_size, ssize_t *read_len) {
+    if (!out || out_size == 0) return -1;
+    out[0] = '\0';
+    char path[128];
+    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, out, out_size - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    out[n] = '\0';
+    if (read_len) *read_len = n;
+    return 0;
+}
+
+static bool cmdline_has_token(const char *raw, ssize_t n, const char *token) {
+    if (!raw || n <= 0 || !token || !*token) return false;
+    ssize_t i = 0;
+    while (i < n) {
+        const char *arg = raw + i;
+        size_t len = strlen(arg);
+        if (len == 0) {
+            i++;
+            continue;
+        }
+        if (strcmp(arg, token) == 0) return true;
+        i += (ssize_t) len + 1;
+    }
+    return false;
+}
+
+static bool is_target_pid(int pid, const char *process_name, const char *main_class) {
+    if (!process_name || !*process_name) return false;
+    char cmd[512];
+    if (read_cmdline_token(pid, cmd, sizeof(cmd)) != 0) return false;
+    if (strcmp(cmd, process_name) != 0) return false;
+    if (!main_class || !*main_class) return true;
+
+    char raw[4096];
+    ssize_t n = 0;
+    if (read_cmdline_raw(pid, raw, sizeof(raw), &n) != 0) return false;
+    return cmdline_has_token(raw, n, main_class);
 }
 
 static bool pid_alive(int pid) {
@@ -101,7 +154,7 @@ static bool kill_pid_force(int pid) {
     return !pid_alive(pid);
 }
 
-static int kill_by_process_name(const char *process_name) {
+static int kill_by_process_name(const char *process_name, const char *main_class) {
     if (!process_name || !*process_name) return 0;
     DIR *dir = opendir("/proc");
     if (!dir) return 0;
@@ -112,13 +165,34 @@ static int kill_by_process_name(const char *process_name) {
         if (!is_digits(ent->d_name)) continue;
         int pid = atoi(ent->d_name);
         if (pid <= 1 || pid == self) continue;
-        char cmd[256];
-        if (read_cmdline_token(pid, cmd, sizeof(cmd)) != 0) continue;
-        if (strcmp(cmd, process_name) != 0) continue;
+        if (!is_target_pid(pid, process_name, main_class)) continue;
         if (kill_pid_force(pid)) killed++;
     }
     closedir(dir);
     return killed;
+}
+
+static const char *pick_app_process_binary(void) {
+    // Prefer ABI-matching app_process variant when available.
+    const char *candidates_64[] = {
+            "/system/bin/app_process64",
+            "/system/bin/app_process",
+            "/system/bin/app_process32"
+    };
+    const char *candidates_32[] = {
+            "/system/bin/app_process32",
+            "/system/bin/app_process",
+            "/system/bin/app_process64"
+    };
+    const char **list = (sizeof(void *) == 8) ? candidates_64 : candidates_32;
+    for (size_t i = 0; i < 3; i++) {
+        if (access(list[i], X_OK) == 0) return list[i];
+    }
+    return NULL;
+}
+
+static bool can_read_file(const char *path) {
+    return path && *path && access(path, R_OK) == 0;
 }
 
 static int parse_args(int argc, char **argv, Config *cfg) {
@@ -157,16 +231,43 @@ static int start_core(const Config *cfg) {
         print_err("missing_args", "start requires --jar --main --port");
         return 2;
     }
+    if (!can_read_file(cfg->jar)) {
+        print_err("jar_unreadable", "jar not readable: %s", cfg->jar);
+        return 2;
+    }
+    int port = 0;
+    if (!parse_port(cfg->port, &port)) {
+        print_err("invalid_port", "port must be 1..65535, got: %s", cfg->port);
+        return 2;
+    }
+    const char *app_process_bin = pick_app_process_binary();
+    if (!app_process_bin) {
+        print_err("missing_app_process", "no executable app_process found");
+        return 2;
+    }
 
-    kill_by_process_name(cfg->process);
+    kill_by_process_name(cfg->process, cfg->main_class);
     usleep(250 * 1000);
+
+    int exec_pipe[2];
+    if (pipe(exec_pipe) != 0) {
+        print_err("pipe_failed", "errno=%d", errno);
+        return 3;
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
+        close(exec_pipe[0]);
+        close(exec_pipe[1]);
         print_err("fork_failed", "errno=%d", errno);
         return 3;
     }
     if (pid == 0) {
+        close(exec_pipe[0]);
+        int flags = fcntl(exec_pipe[1], F_GETFD);
+        if (flags >= 0) {
+            fcntl(exec_pipe[1], F_SETFD, flags | FD_CLOEXEC);
+        }
         setsid();
         chdir("/");
 
@@ -218,9 +319,9 @@ static int start_core(const Config *cfg) {
             app_labels_arg[0] = '\0';
         }
 
-        char *child_argv[14];
+        char *child_argv[16];
         int argi = 0;
-        child_argv[argi++] = "/system/bin/app_process";
+        child_argv[argi++] = (char *) app_process_bin;
         child_argv[argi++] = classpath_arg;
         if (map_dir_arg[0] != '\0') child_argv[argi++] = map_dir_arg;
         if (llm_cfg_arg[0] != '\0') child_argv[argi++] = llm_cfg_arg;
@@ -232,7 +333,25 @@ static int start_core(const Config *cfg) {
         child_argv[argi++] = (char *) cfg->port;
         child_argv[argi] = NULL;
         execvp(child_argv[0], child_argv);
+        int exec_errno = errno;
+        (void) write(exec_pipe[1], &exec_errno, sizeof(exec_errno));
+        close(exec_pipe[1]);
         _exit(111);
+    }
+
+    close(exec_pipe[1]);
+    int child_exec_errno = 0;
+    ssize_t rn = read(exec_pipe[0], &child_exec_errno, sizeof(child_exec_errno));
+    close(exec_pipe[0]);
+    if (rn == (ssize_t) sizeof(child_exec_errno)) {
+        (void) waitpid(pid, NULL, 0);
+        print_err(
+                "exec_failed",
+                "app_process=%s errno=%d",
+                app_process_bin,
+                child_exec_errno
+        );
+        return 4;
     }
 
     usleep(200 * 1000);
@@ -240,17 +359,29 @@ static int start_core(const Config *cfg) {
         print_err("child_exited", "pid=%d", (int) pid);
         return 4;
     }
-    print_ok("ACTION=start PID=%d PROCESS=%s", (int) pid, cfg->process);
+    print_ok(
+            "ACTION=start PID=%d PROCESS=%s PORT=%d APP_PROCESS=%s",
+            (int) pid,
+            cfg->process,
+            port,
+            app_process_bin
+    );
     return 0;
 }
 
 static int stop_core(const Config *cfg) {
-    int killed = kill_by_process_name(cfg->process);
+    int killed = kill_by_process_name(cfg->process, cfg->main_class);
     print_ok("ACTION=stop PROCESS=%s KILLED=%d", cfg->process, killed);
     return 0;
 }
 
 int main(int argc, char **argv) {
+    uid_t uid = getuid();
+    if (uid != 0 && uid != 2000) {
+        print_err("invalid_uid", "starter must run as root or shell, uid=%d", (int) uid);
+        return 2;
+    }
+
     Config cfg;
     parse_args(argc, argv, &cfg);
     if (cfg.action[0] == '\0') {
