@@ -134,3 +134,17 @@ MIT，见 [LICENSE](LICENSE)。
 ## Star 趋势
 
 [![Star History Chart](https://api.star-history.com/svg?repos=wuwei-crg/LXB-Framework&type=Date)](https://star-history.com/#wuwei-crg/LXB-Framework&Date)
+
+## 开发者调试（本地改动快速验证）
+
+改完代码后，可按以下方式快速安装 Debug 版到手机进行联调：
+
+1. 连接设备并确认 ADB 可用（如 `adb devices` 可看到设备）
+2. 进入 `android/LXB-Ignition` 目录
+3. 执行：
+
+```bash
+./gradlew :app:installDebug
+```
+
+安装完成后，直接在手机上打开 Debug 版 `LXB-Ignition` 进行调试。

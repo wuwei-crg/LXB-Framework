@@ -127,6 +127,20 @@ This project is also shared with and supported by the [LINUX DO community](https
 
 Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
+## Developer Debug Workflow
+
+After code changes, you can quickly install a debug build to your phone for testing:
+
+1. Connect your device and confirm ADB is available (for example, `adb devices` shows the device).
+2. Go to `android/LXB-Ignition`.
+3. Run:
+
+```bash
+./gradlew :app:installDebug
+```
+
+After installation, open the debug build of `LXB-Ignition` on the phone and start debugging.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
