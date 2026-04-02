@@ -286,10 +286,7 @@ public class LlmClient {
         if (lower.endsWith("/chat/completions")) {
             return base;
         }
-        if (lower.endsWith("/v1")) {
-            return base + "/chat/completions";
-        }
-        return base + "/v1/chat/completions";
+        return base + "/chat/completions";
     }
 
     private static String buildChatPayload(String model, String systemPrompt, String userMessage) {

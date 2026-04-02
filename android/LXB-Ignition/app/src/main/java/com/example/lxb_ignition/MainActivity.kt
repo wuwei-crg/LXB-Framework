@@ -524,7 +524,7 @@ private val ZhMap = mapOf(
     "Current app version" to "当前应用版本",
     "Check latest release" to "检查最新版本",
     "Open releases" to "打开 Releases",
-    "Endpoint is auto-completed to /v1/chat/completions." to "会自动补齐为 /v1/chat/completions 端点。",
+    "Endpoint is auto-completed to /chat/completions." to "会自动补齐为 /chat/completions 端点。",
     "Resolved request URL" to "真实调用 URL",
     "Input API Base URL to preview request endpoint." to "输入 API Base URL 后，这里会实时显示最终请求地址。",
     "lxb-core server" to "lxb-core 服务",
@@ -2933,7 +2933,7 @@ fun LlmConfigCard(viewModel: MainViewModel) {
                 singleLine = true,
                 supportingText = {
                     Text(
-                        tr("Endpoint is auto-completed to /v1/chat/completions."),
+                        tr("Endpoint is auto-completed to /chat/completions."),
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         fontSize = 12.sp
                     )
