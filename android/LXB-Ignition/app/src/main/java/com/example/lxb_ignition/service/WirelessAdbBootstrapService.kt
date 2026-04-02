@@ -52,6 +52,7 @@ class WirelessAdbBootstrapService : Service() {
         const val ACTION_STOP_CORE_NATIVE = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_STOP_CORE_NATIVE"
         const val ACTION_STOP_CORE_UNIFIED = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_STOP_CORE_UNIFIED"
         const val ACTION_OPEN_DEV_OPTIONS = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_OPEN_DEV_OPTIONS"
+        const val ACTION_OPEN_WIRELESS_DEBUGGING = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_OPEN_WIRELESS_DEBUGGING"
         const val ACTION_SUBMIT_PAIRING = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_SUBMIT_PAIRING"
 
         const val ACTION_STATUS = "com.example.lxb_ignition.action.WIRELESS_BOOTSTRAP_STATUS"
@@ -70,6 +71,7 @@ class WirelessAdbBootstrapService : Service() {
 
         private const val PREFS_NAME = "lxb_config"
         private const val KEY_LXB_PORT = "lxb_port"
+        private const val KEY_UI_LANG = "ui_lang"
         private const val KEY_WIRELESS_ADB_HOST = "wireless_adb_host"
         private const val KEY_WIRELESS_ADB_PORT = "wireless_adb_port"
         private const val DEFAULT_LXB_PORT = 12345
@@ -153,6 +155,7 @@ class WirelessAdbBootstrapService : Service() {
             ACTION_STOP_CORE_UNIFIED -> stopCoreUnified()
             ACTION_STOP -> stopBootstrap()
             ACTION_OPEN_DEV_OPTIONS -> openSettings(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+            ACTION_OPEN_WIRELESS_DEBUGGING -> openWirelessDebuggingSettings()
             ACTION_SUBMIT_PAIRING -> {
                 val pairCode = readPairCodeFromIntent(intent)
                 submitPairing(pairCode)
@@ -436,34 +439,16 @@ class WirelessAdbBootstrapService : Service() {
                     return@launch
                 }
 
-                val connectHint = if (connect != null) connect.asText() else "${pairing.host}:5555/auto"
-                setState("CONNECTING", "Pairing ok. Connecting to $connectHint ...")
-                updateNotification()
-
-                val connected = ensureConnected(manager, connect, pairing.host)
-                if (!connected || !manager.isConnected) {
-                    finishBootstrap("FAILED", "ADB connect failed after pairing.")
-                    return@launch
-                }
-                val persisted = connect ?: Endpoint(pairing.host, 5555)
+                startDiscovery()
+                val connectReady = waitForConnectEndpoint(CONNECT_ENDPOINT_WAIT_MS)
+                val persisted = connectReady ?: connect ?: Endpoint(pairing.host, 5555)
                 persistWirelessEndpoint(persisted)
 
-                setState("STARTING_CORE", "Connected. Deploying lxb-core and launching app_process...")
+                setState(
+                    "PAIRED",
+                    "Pairing succeeded. Return to the app and tap \"I already paired before, start directly\"."
+                )
                 updateNotification()
-
-                val deploy = deployCoreJarViaShell(manager)
-                if (!deploy.ok) {
-                    finishBootstrap("FAILED", "Failed to deploy lxb-core jar via shell channel: ${deploy.detail}")
-                    return@launch
-                }
-                val port = getConfiguredPort()
-                val launchRes = launchCoreWithVerification(manager, port)
-                if (!launchRes.ok) {
-                    finishBootstrap("FAILED", "core launch verify failed: ${launchRes.detail}")
-                    return@launch
-                }
-
-                finishBootstrap("RUNNING", "Wireless ADB ready. lxb-core started on port $port.")
             } catch (e: AdbPairingRequiredException) {
                 finishBootstrap("FAILED", "ADB reports pairing required: ${formatExceptionChain(e)}")
             } catch (e: Exception) {
@@ -923,27 +908,6 @@ class WirelessAdbBootstrapService : Service() {
         } finally {
             runCatching { manager.close() }
         }
-    }
-
-    private fun ensureConnected(
-        manager: WirelessAdbConnectionManager,
-        connect: Endpoint?,
-        pairingHost: String
-    ): Boolean {
-        return runCatching {
-            if (connect != null) {
-                manager.connect(connect.host, connect.port)
-            } else {
-                // Fallback path for devices that do not advertise connect mDNS immediately.
-                val direct = runCatching { manager.connect(pairingHost, 5555) }.getOrDefault(false)
-                if (!direct) {
-                    manager.setHostAddress(pairingHost)
-                    manager.autoConnect(applicationContext, 5000)
-                } else {
-                    true
-                }
-            }
-        }.getOrDefault(false)
     }
 
     private fun normalizePairCode(raw: String): String {
@@ -1435,12 +1399,13 @@ class WirelessAdbBootstrapService : Service() {
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val uiLang = currentUiLang()
         val channel = NotificationChannel(
             CHANNEL_ID,
-            CHANNEL_NAME,
+            nt("LXB Wireless Bootstrap", "LXB 无线启动", uiLang),
             NotificationManager.IMPORTANCE_LOW
         )
-        channel.description = "Wireless ADB bootstrap status"
+        channel.description = nt("Wireless ADB startup status", "无线 ADB 启动状态", uiLang)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
@@ -1452,6 +1417,7 @@ class WirelessAdbBootstrapService : Service() {
     }
 
     private fun buildNotification(): Notification {
+        createChannel()
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -1469,27 +1435,26 @@ class WirelessAdbBootstrapService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
         )
 
+        val uiLang = currentUiLang()
         val codeInput = RemoteInput.Builder(REMOTE_INPUT_PAIR_CODE)
-            .setLabel("pairing code")
+            .setLabel(nt("6-digit pairing code", "6 位配对码", uiLang))
             .build()
 
         val submitAction = NotificationCompat.Action.Builder(
             0,
-            "Submit Code",
+            nt("Submit code", "提交配对码", uiLang),
             submitPending
         )
             .addRemoteInput(codeInput)
             .setAllowGeneratedReplies(false)
             .build()
 
-        val pairHint = latestPairingEndpoint?.let { " | pair=${it.asText()}" } ?: ""
-        val connHint = latestConnectEndpoint?.let { " | connect=${it.asText()}" } ?: ""
-        val content = "state=$currentState | $currentMessage$pairHint$connHint"
+        val content = buildNotificationContent(uiLang)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Wireless ADB Bootstrap")
-            .setContentText(content)
+            .setContentTitle(buildNotificationTitle(uiLang))
+            .setContentText(content.lines().firstOrNull().orEmpty())
             .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -1498,5 +1463,119 @@ class WirelessAdbBootstrapService : Service() {
             .setContentIntent(launchPending)
             .addAction(submitAction)
             .build()
+    }
+
+    private fun buildNotificationTitle(uiLang: String): String {
+        return when (currentState) {
+            "RUNNING" -> nt("Core service is running", "核心服务已运行", uiLang)
+            "PAIRED" -> nt("Phone paired successfully", "手机已配对成功", uiLang)
+            "FAILED" -> nt("Wireless startup failed", "无线启动失败", uiLang)
+            "PAIRING" -> nt("Pairing phone", "正在配对手机", uiLang)
+            "CONNECTING" -> nt("Connecting phone", "正在连接手机", uiLang)
+            "STARTING_CORE" -> nt("Starting core service", "正在启动核心服务", uiLang)
+            "RECONNECTING" -> nt("Recovering connection", "正在恢复连接", uiLang)
+            "STOPPING" -> nt("Stopping core service", "正在停止核心服务", uiLang)
+            else -> nt("Wireless startup guide", "无线启动引导", uiLang)
+        }
+    }
+
+    private fun buildNotificationContent(uiLang: String): String {
+        val lines = ArrayList<String>(4)
+        val main = when (currentState) {
+            "GUIDE_SETTINGS" -> nt(
+                "Open Developer Options, then turn on Wireless debugging.",
+                "请先打开开发者选项，再开启无线调试。",
+                uiLang
+            )
+            "WAIT_INPUT" -> nt(
+                "Open \"Pair device with pairing code\", then enter the 6-digit code here.",
+                "请打开“使用配对码配对设备”，然后在这里输入 6 位配对码。",
+                uiLang
+            )
+            "PAIRING" -> nt(
+                "Pairing in progress. Keep the pairing page open.",
+                "正在配对，请保持配对码页面开启。",
+                uiLang
+            )
+            "PAIRED" -> nt(
+                "Pairing succeeded. Return to the app and tap \"I already paired before, start directly\".",
+                "配对成功。请回到应用，点击“我之前已经配对过，直接启动”。",
+                uiLang
+            )
+            "CONNECTING" -> nt(
+                "Pairing succeeded. Connecting to the phone now.",
+                "配对成功，正在连接手机。",
+                uiLang
+            )
+            "STARTING_CORE" -> nt(
+                "Connected. Starting the core service now.",
+                "已连接，正在启动核心服务。",
+                uiLang
+            )
+            "RUNNING" -> nt(
+                "Startup finished. You can return to the app.",
+                "启动完成，现在可以回到应用使用。",
+                uiLang
+            )
+            "FAILED" -> nt(
+                "Startup failed. Open the app to retry or check the guide.",
+                "启动失败，请回到应用重试或查看引导。",
+                uiLang
+            )
+            "RECONNECTING" -> nt(
+                "Connection dropped. Trying to recover in the background.",
+                "连接已断开，正在后台尝试恢复。",
+                uiLang
+            )
+            "STOPPING" -> nt(
+                "Stopping the core process.",
+                "正在停止核心进程。",
+                uiLang
+            )
+            else -> nt(
+                "Start the guide, then follow the steps in the app.",
+                "请先开始引导，然后按应用内步骤操作。",
+                uiLang
+            )
+        }
+        lines.add(main)
+        latestPairingEndpoint?.let {
+            lines.add(
+                nt(
+                    "Detected pairing service: ${it.asText()}",
+                    "已检测到配对服务：${it.asText()}",
+                    uiLang
+                )
+            )
+        }
+        latestConnectEndpoint?.let {
+            lines.add(
+                nt(
+                    "Detected connect service: ${it.asText()}",
+                    "已检测到连接服务：${it.asText()}",
+                    uiLang
+                )
+            )
+        }
+        if (currentState == "FAILED" || currentState == "RECONNECTING") {
+            lines.add(
+                nt(
+                    "Details: $currentMessage",
+                    "详情：$currentMessage",
+                    uiLang
+                )
+            )
+        }
+        return lines.joinToString("\n")
+    }
+
+    private fun currentUiLang(): String {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_UI_LANG, "en").orEmpty().trim().lowercase()
+        return if (raw == "zh") "zh" else "en"
+    }
+
+    private fun nt(en: String, zh: String, uiLang: String): String {
+        return if (uiLang == "zh") zh else en
     }
 }

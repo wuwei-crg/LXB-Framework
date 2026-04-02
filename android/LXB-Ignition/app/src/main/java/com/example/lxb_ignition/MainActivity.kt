@@ -183,14 +183,160 @@ fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
 
 // Tab 1: Control
 
+private data class WirelessGuideUiState(
+    val headline: String,
+    val detail: String,
+    val stepIndex: Int,
+    val accentColor: Color,
+    val ready: Boolean = false,
+    val failed: Boolean = false,
+    val paired: Boolean = false
+)
+
+private fun resolveWirelessGuideUiState(status: WirelessBootstrapStatus): WirelessGuideUiState {
+    val detail = status.message.ifBlank { "Idle" }
+    return when (status.state.uppercase(Locale.ROOT)) {
+        "GUIDE_SETTINGS" -> WirelessGuideUiState(
+            headline = "Open Developer Options",
+            detail = detail,
+            stepIndex = 1,
+            accentColor = Color(0xFF1565C0)
+        )
+        "WAIT_INPUT" -> WirelessGuideUiState(
+            headline = "Waiting for pairing code",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFF1565C0)
+        )
+        "PAIRING" -> WirelessGuideUiState(
+            headline = "Pairing phone",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFFEF6C00)
+        )
+        "PAIRED" -> WirelessGuideUiState(
+            headline = "Phone paired successfully",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFF2E7D32),
+            paired = true
+        )
+        "CONNECTING" -> WirelessGuideUiState(
+            headline = "Connecting phone",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFFEF6C00)
+        )
+        "STARTING_CORE" -> WirelessGuideUiState(
+            headline = "Starting core service",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFF6A1B9A)
+        )
+        "RECONNECTING" -> WirelessGuideUiState(
+            headline = "Recovering core connection",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFFEF6C00)
+        )
+        "RUNNING" -> WirelessGuideUiState(
+            headline = "Ready to use",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFF2E7D32),
+            ready = true
+        )
+        "FAILED" -> WirelessGuideUiState(
+            headline = "Startup failed",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFFC62828),
+            failed = true
+        )
+        "STOPPING" -> WirelessGuideUiState(
+            headline = "Stopping core service",
+            detail = detail,
+            stepIndex = 4,
+            accentColor = Color(0xFF616161)
+        )
+        else -> WirelessGuideUiState(
+            headline = "Not started yet",
+            detail = detail,
+            stepIndex = 1,
+            accentColor = Color(0xFF616161)
+        )
+    }
+}
+
 @Composable
 fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val coreRuntime by viewModel.coreRuntimeStatus.collectAsState()
     val wireless by viewModel.wirelessBootstrapStatus.collectAsState()
+    val wirelessDebuggingEnabled by viewModel.wirelessDebuggingEnabled.collectAsState()
     val rootAvailable by viewModel.rootAvailable.collectAsState()
     val rootDetail by viewModel.rootDetail.collectAsState()
-    val scrollState = rememberScrollState()
+    var page by rememberSaveable { mutableIntStateOf(0) }
 
+    when (page) {
+        0 -> ControlOverviewPage(
+            modifier = modifier,
+            coreRuntime = coreRuntime,
+            wireless = wireless,
+            rootAvailable = rootAvailable,
+            rootDetail = rootDetail,
+            onOpenWirelessGuide = { page = 1 },
+            onOpenRootGuide = { page = 2 },
+            onStop = { viewModel.stopServerProcess() },
+            onRefreshState = { viewModel.refreshCoreRuntimeStatusNow() }
+        )
+        1 -> SingleConfigPage(
+            title = tr("Wireless ADB startup"),
+            modifier = modifier,
+            onBack = { page = 0 }
+        ) {
+            WirelessGuidePage(
+                status = wireless,
+                wirelessDebuggingEnabled = wirelessDebuggingEnabled,
+                onStartGuide = { viewModel.startWirelessBootstrapGuide() },
+                onStartDirect = { viewModel.startServerWithNative() },
+                onOpenWirelessDebugging = { viewModel.openWirelessDebuggingSettings() },
+                onRefreshState = {
+                    viewModel.refreshWirelessDebuggingEnabled()
+                    viewModel.refreshCoreRuntimeStatusNow()
+                }
+            )
+        }
+        2 -> SingleConfigPage(
+            title = tr("Root startup"),
+            modifier = modifier,
+            onBack = { page = 0 }
+        ) {
+            RootStartGuidePage(
+                rootAvailable = rootAvailable,
+                rootDetail = rootDetail,
+                coreRuntime = coreRuntime,
+                onStartRoot = { viewModel.startServerWithRootDirect() },
+                onRefreshRoot = { viewModel.refreshRootAvailability() },
+                onRefreshState = { viewModel.refreshCoreRuntimeStatusNow() }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ControlOverviewPage(
+    modifier: Modifier = Modifier,
+    coreRuntime: CoreRuntimeStatus,
+    wireless: WirelessBootstrapStatus,
+    rootAvailable: Boolean,
+    rootDetail: String,
+    onOpenWirelessGuide: () -> Unit,
+    onOpenRootGuide: () -> Unit,
+    onStop: () -> Unit,
+    onRefreshState: () -> Unit
+) {
+    val scrollState = rememberScrollState()
+    val wirelessUi = resolveWirelessGuideUiState(wireless)
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -198,29 +344,373 @@ fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        ProcessRuntimeCard(
-            status = coreRuntime
+        ProcessRuntimeCard(status = coreRuntime)
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(tr("Choose startup method"), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    tr("Pick the method that matches your phone. Detailed steps are inside each page."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
+                    fontSize = 12.sp
+                )
+            }
+        }
+        StartupMethodCard(
+            title = tr("Wireless ADB startup"),
+            description = tr("Recommended for most phones without root."),
+            statusTitle = tr(wirelessUi.headline),
+            statusDetail = wirelessUi.detail,
+            accentColor = wirelessUi.accentColor,
+            buttonText = tr("Open guide"),
+            onClick = onOpenWirelessGuide
         )
-
-        RootDirectStartCard(
-            rootAvailable = rootAvailable,
-            rootDetail = rootDetail,
-            onStartRoot = { viewModel.startServerWithRootDirect() }
+        StartupMethodCard(
+            title = tr("Root startup"),
+            description = tr("For rooted phones. Starts lxb-core directly with su."),
+            statusTitle = if (rootAvailable) tr("Root available") else tr("Root unavailable"),
+            statusDetail = rootDetail,
+            accentColor = if (rootAvailable) Color(0xFF2E7D32) else Color(0xFFE65100),
+            buttonText = tr("Open root page"),
+            onClick = onOpenRootGuide
         )
-
-        AdbStartCard(
-            onStartAdb = { viewModel.startServerWithNative() }
-        )
-
         UnifiedStopCard(
-            onStop = { viewModel.stopServerProcess() },
-            onRefreshState = { viewModel.refreshCoreRuntimeStatusNow() }
+            onStop = onStop,
+            onRefreshState = onRefreshState
         )
+    }
+}
 
-        WirelessBootstrapCard(
-            status = wireless,
-            onStartGuide = { viewModel.startWirelessBootstrapGuide() }
+@Composable
+private fun StartupMethodCard(
+    title: String,
+    description: String,
+    statusTitle: String,
+    statusDetail: String,
+    accentColor: Color,
+    buttonText: String,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        onClick = onClick
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                description,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
+                fontSize = 12.sp
+            )
+            Card(colors = CardDefaults.cardColors(containerColor = accentColor.copy(alpha = 0.12f))) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = statusTitle,
+                        color = accentColor,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = statusDetail,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+            Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+                Text(buttonText)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WirelessGuidePage(
+    status: WirelessBootstrapStatus,
+    wirelessDebuggingEnabled: Boolean,
+    onStartGuide: () -> Unit,
+    onStartDirect: () -> Unit,
+    onOpenWirelessDebugging: () -> Unit,
+    onRefreshState: () -> Unit
+) {
+    val ui = resolveWirelessGuideUiState(status)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = ui.accentColor.copy(alpha = 0.12f))
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(tr("This is the easiest path for most users."), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    tr("The app will open Developer Options, then wait for you to enter the 6-digit pairing code from the notification."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(tr(ui.headline), style = MaterialTheme.typography.titleSmall, color = ui.accentColor)
+                Text(
+                    ui.detail,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
+                    fontSize = 12.sp
+                )
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(tr("What to do"), style = MaterialTheme.typography.titleSmall)
+                GuideStepRow(
+                    number = 1,
+                    title = tr("Turn on Developer Options"),
+                    detail = tr("If your phone has not enabled Developer Options yet, search your phone model first."),
+                    active = ui.stepIndex == 1 && !ui.ready,
+                    done = ui.stepIndex > 1 || ui.ready
+                )
+                GuideStepRow(
+                    number = 2,
+                    title = tr("Turn on Wireless debugging"),
+                    detail = tr("Open Developer Options, find Wireless debugging, and switch it on."),
+                    active = ui.stepIndex == 2 && !ui.ready,
+                    done = ui.stepIndex > 2 || ui.ready
+                )
+                GuideStepRow(
+                    number = 3,
+                    title = tr("Open the pairing-code page"),
+                    detail = tr("Tap \"Pair device with pairing code\" and keep that page open."),
+                    active = ui.stepIndex == 3 && !ui.ready,
+                    done = ui.stepIndex > 3 || ui.ready
+                )
+                GuideStepRow(
+                    number = 4,
+                    title = tr("Enter the pairing code in the notification"),
+                    detail = tr("After the notification appears, enter the 6-digit pairing code there and wait for startup to finish."),
+                    active = ui.stepIndex == 4 && !ui.ready && !ui.paired,
+                    done = ui.ready || ui.paired
+                )
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(tr("Actions"), style = MaterialTheme.typography.titleSmall)
+                Button(onClick = onStartGuide, modifier = Modifier.fillMaxWidth()) {
+                    Text(tr("Open Developer Options (Start Guide)"))
+                }
+                OutlinedButton(
+                    onClick = onStartDirect,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = wirelessDebuggingEnabled
+                ) {
+                    Text(tr("I already paired before, start directly"))
+                }
+                if (!wirelessDebuggingEnabled) {
+                    Text(
+                        tr("Please make sure Wireless debugging is turned on first."),
+                        color = Color(0xFFE65100),
+                        fontSize = 12.sp
+                    )
+                    OutlinedButton(onClick = onOpenWirelessDebugging, modifier = Modifier.fillMaxWidth()) {
+                        Text(tr("Open Wireless debugging settings"))
+                    }
+                }
+                OutlinedButton(onClick = onRefreshState, modifier = Modifier.fillMaxWidth()) {
+                    Text(tr("Refresh connection state"))
+                }
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(tr("Need help?"), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    tr("- USB debugging must be enabled, otherwise process keepalive may fail."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    tr("- MIUI / HyperOS: enable \"USB debugging (Security settings)\". This is separate from \"USB debugging\"."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    tr("- ColorOS (OPPO / OnePlus): disable \"Permission monitoring\" in Developer options."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    tr("- Flyme: disable \"Flyme payment protection\" in Developer options."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    tr("Reference: ROM-specific notes above are adapted from Shizuku docs."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f),
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GuideStepRow(
+    number: Int,
+    title: String,
+    detail: String,
+    active: Boolean,
+    done: Boolean
+) {
+    val bg = when {
+        done -> Color(0xFF2E7D32).copy(alpha = 0.10f)
+        active -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val fg = when {
+        done -> Color(0xFF2E7D32)
+        active -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(bg, shape = MaterialTheme.shapes.medium)
+            .padding(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = number.toString(),
+            color = fg,
+            style = MaterialTheme.typography.titleSmall
         )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, color = fg, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                detail,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun RootStartGuidePage(
+    rootAvailable: Boolean,
+    rootDetail: String,
+    coreRuntime: CoreRuntimeStatus,
+    onStartRoot: () -> Unit,
+    onRefreshRoot: () -> Unit,
+    onRefreshState: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF2E7D32).copy(alpha = 0.10f))
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(tr("Root startup"), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    tr("For rooted phones. Starts lxb-core directly with su."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = if (rootAvailable) tr("Root available") else tr("Root unavailable"),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (rootAvailable) Color(0xFF2E7D32) else Color(0xFFE65100)
+                )
+                Text(rootDetail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f))
+                Text(
+                    "${tr("State")}: ${if (coreRuntime.ready) tr("Core Connected") else tr("Core Disconnected")}",
+                    fontSize = 12.sp,
+                    color = if (coreRuntime.ready) Color(0xFF2E7D32) else Color(0xFFE65100)
+                )
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(tr("Before you start"), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    tr("Requires root permission grant in superuser manager."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    tr("No Wireless ADB guide is needed on rooted phones."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    tr("If startup fails, check whether the root permission popup was denied or timed out."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(tr("Actions"), style = MaterialTheme.typography.titleSmall)
+                Button(
+                    onClick = onStartRoot,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = rootAvailable
+                ) {
+                    Text(tr("Start via Root"))
+                }
+                OutlinedButton(onClick = onRefreshRoot, modifier = Modifier.fillMaxWidth()) {
+                    Text(tr("Check Root"))
+                }
+                OutlinedButton(onClick = onRefreshState, modifier = Modifier.fillMaxWidth()) {
+                    Text(tr("Refresh connection state"))
+                }
+            }
+        }
     }
 }
 
@@ -464,6 +954,45 @@ private val ZhMap = mapOf(
     "OK" to "确定",
     "Core Connected" to "Core 已连接",
     "Core Disconnected" to "Core 未连接",
+    "Choose startup method" to "选择启动方式",
+    "Pick the method that matches your phone. Detailed steps are inside each page." to "选择适合你手机的启动方式，详细步骤已放进各自页面。",
+    "Wireless ADB startup" to "无线 ADB 启动",
+    "Recommended for most phones without root." to "适合大多数未 Root 手机。",
+    "Open guide" to "打开引导",
+    "Root startup" to "Root 启动",
+    "For rooted phones. Starts lxb-core directly with su." to "适合已 Root 手机，直接通过 su 启动 lxb-core。",
+    "Open root page" to "打开 Root 页面",
+    "Open Developer Options" to "打开开发者选项",
+    "Waiting for pairing code" to "等待输入配对码",
+    "Pairing phone" to "正在配对手机",
+    "Phone paired successfully" to "手机已配对成功",
+    "Connecting phone" to "正在连接手机",
+    "Starting core service" to "正在启动核心服务",
+    "Recovering core connection" to "正在恢复核心连接",
+    "Ready to use" to "已可使用",
+    "Startup failed" to "启动失败",
+    "Stopping core service" to "正在停止核心服务",
+    "Not started yet" to "尚未启动",
+    "This is the easiest path for most users." to "这是大多数用户最省事的启动方式。",
+    "The app will open Developer Options, then wait for you to enter the 6-digit pairing code from the notification." to "应用会先打开开发者选项，然后等待你在通知栏中输入 6 位配对码。",
+    "What to do" to "你需要做什么",
+    "Turn on Developer Options" to "打开开发者选项",
+    "If your phone has not enabled Developer Options yet, search your phone model first." to "如果你的手机还没开启开发者选项，请先搜索自己机型的开启方法。",
+    "Turn on Wireless debugging" to "打开无线调试",
+    "Open Developer Options, find Wireless debugging, and switch it on." to "打开开发者选项，找到“无线调试”，并将其打开。",
+    "Open the pairing-code page" to "打开配对码页面",
+    "Tap \"Pair device with pairing code\" and keep that page open." to "点击“使用配对码配对设备”，并保持该页面开启。",
+    "Enter the pairing code in the notification" to "在通知栏输入配对码",
+    "After the notification appears, enter the 6-digit pairing code there and wait for startup to finish." to "通知出现后，直接在通知栏输入 6 位配对码，并等待启动完成。",
+    "Actions" to "操作",
+    "I already paired before, start directly" to "我之前已经配对过，直接启动",
+    "Please make sure Wireless debugging is turned on first." to "请先确认已经打开无线调试。",
+    "Open Wireless debugging settings" to "打开无线调试设置",
+    "Refresh connection state" to "刷新连接状态",
+    "Need help?" to "需要帮助？",
+    "Before you start" to "开始前说明",
+    "No Wireless ADB guide is needed on rooted phones." to "Root 手机不需要走无线 ADB 引导。",
+    "If startup fails, check whether the root permission popup was denied or timed out." to "如果启动失败，请检查 Root 授权弹窗是否被拒绝或超时。",
     "Start Native" to "原生启动",
     "ADB start" to "ADB 启动",
     "Use Wireless ADB bootstrap path. Pair once, then tap start." to "使用无线 ADB 引导路径，先完成配对，再点击启动。",
@@ -2047,63 +2576,6 @@ fun ProcessRuntimeCard(status: CoreRuntimeStatus) {
 }
 
 @Composable
-fun AdbStartCard(
-    onStartAdb: () -> Unit
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(tr("ADB start"), style = MaterialTheme.typography.titleSmall)
-            Text(
-                tr("Use Wireless ADB bootstrap path. Pair once, then tap start."),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                fontSize = 12.sp
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    tr("Before starting (ADB path):"),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("- USB debugging must be enabled, otherwise process keepalive may fail."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("- MIUI / HyperOS: enable \"USB debugging (Security settings)\". This is separate from \"USB debugging\"."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("- ColorOS (OPPO / OnePlus): disable \"Permission monitoring\" in Developer options."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("- Flyme: disable \"Flyme payment protection\" in Developer options."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-            }
-            Text(
-                tr("Reference: ROM-specific notes above are adapted from Shizuku docs."),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
-                fontSize = 11.sp
-            )
-            OutlinedButton(
-                onClick = onStartAdb,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(tr("Start via ADB"), fontSize = 12.sp)
-            }
-        }
-    }
-}
-
-@Composable
 fun UnifiedStopCard(
     onStop: () -> Unit,
     onRefreshState: () -> Unit
@@ -2142,108 +2614,6 @@ fun UnifiedStopCard(
                 )
             ) {
                 Text(tr("Refresh Core State"), fontSize = 12.sp)
-            }
-        }
-    }
-}
-
-@Composable
-fun WirelessBootstrapCard(
-    status: WirelessBootstrapStatus,
-    onStartGuide: () -> Unit
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(tr("Wireless bootstrap"), style = MaterialTheme.typography.titleSmall)
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    tr("Wireless ADB setup steps:"),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("1. Ensure Developer options is enabled. If unsure, search online for your phone model."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("2. Tap \"Open Developer Options (Start Guide)\"."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("3. In Developer options, find Wireless debugging and turn it on."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("4. Tap \"Pair device with pairing code\"."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("5. After the pairing code appears, enter it in this app's notification input."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("6. Return to the app and check whether core starts automatically. If not, tap \"Start via ADB\" manually."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                    fontSize = 12.sp
-                )
-            }
-            Text(
-                "${tr("State")}: ${status.state} | ${status.message}",
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                fontSize = 12.sp
-            )
-            OutlinedButton(
-                onClick = onStartGuide,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !status.running
-            ) {
-                Text(tr("Open Developer Options (Start Guide)"), fontSize = 12.sp)
-            }
-        }
-    }
-}
-
-@Composable
-fun RootDirectStartCard(
-    rootAvailable: Boolean,
-    rootDetail: String,
-    onStartRoot: () -> Unit
-) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(tr("Root start"), style = MaterialTheme.typography.titleSmall)
-            Text(
-                tr("For rooted phones: start lxb-core directly via su. No Wireless ADB guide required."),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                fontSize = 12.sp
-            )
-            Text(
-                tr("Requires root permission grant in superuser manager."),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                fontSize = 12.sp
-            )
-            Text(
-                "${tr("State")}: ${if (rootAvailable) tr("Root available") else tr("Root unavailable")} ($rootDetail)",
-                color = if (rootAvailable) Color(0xFF2E7D32) else Color(0xFFE65100),
-                fontSize = 12.sp
-            )
-            OutlinedButton(
-                onClick = onStartRoot,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = rootAvailable
-            ) {
-                Text(tr("Start via Root"), fontSize = 12.sp)
             }
         }
     }

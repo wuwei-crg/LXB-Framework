@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -227,6 +228,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _wirelessBootstrapStatus = MutableStateFlow(WirelessBootstrapStatus())
     val wirelessBootstrapStatus: StateFlow<WirelessBootstrapStatus> = _wirelessBootstrapStatus.asStateFlow()
+    private val _wirelessDebuggingEnabled = MutableStateFlow(false)
+    val wirelessDebuggingEnabled: StateFlow<Boolean> = _wirelessDebuggingEnabled.asStateFlow()
     private val _rootAvailable = MutableStateFlow(false)
     val rootAvailable: StateFlow<Boolean> = _rootAvailable.asStateFlow()
     private val _rootDetail = MutableStateFlow("not checked")
@@ -338,6 +341,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLog("[MAP] $msg")
         }
         refreshRootAvailability()
+        refreshWirelessDebuggingEnabled()
     }
 
     fun startServerWithNative() {
@@ -409,8 +413,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshCoreRuntimeStatusNow() {
         viewModelScope.launch(Dispatchers.IO) {
+            refreshWirelessDebuggingEnabled()
             publishCoreRuntimeStatus(probeCoreHandshakeReady(1500))
         }
+    }
+
+    fun refreshWirelessDebuggingEnabled() {
+        val app = getApplication<Application>()
+        val enabled = runCatching {
+            Settings.Global.getInt(app.contentResolver, "adb_wifi_enabled", 0) == 1
+        }.getOrDefault(false)
+        _wirelessDebuggingEnabled.value = enabled
     }
 
     fun startWirelessBootstrapGuide() {
@@ -420,6 +433,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             state = "GUIDE_SETTINGS",
             message = "Opening Developer Options and starting guide..."
         )
+    }
+
+    fun openWirelessDebuggingSettings() {
+        sendWirelessBootstrapAction(WirelessAdbBootstrapService.ACTION_OPEN_WIRELESS_DEBUGGING)
     }
 
     private fun sendWirelessBootstrapAction(action: String) {
@@ -450,6 +467,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (coreProbeJob?.isActive == true) return
         coreProbeJob = viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
+                refreshWirelessDebuggingEnabled()
                 val ready = probeCoreHandshakeReady(1200)
                 publishCoreRuntimeStatus(ready)
                 delay(2000L)
