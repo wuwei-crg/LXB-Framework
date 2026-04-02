@@ -101,6 +101,7 @@ public class CortexFsmEngine {
         public final List<Map<String, Object>> appCandidates = new ArrayList<>();
         public final List<Map<String, Object>> pageCandidates = new ArrayList<>();
         public final Map<String, Object> coordProbe = new LinkedHashMap<>();
+        public final Map<String, Object> textInputSupport = new LinkedHashMap<>();
 
         // Task decomposition (v2) fields
         public final List<SubTask> subTasks = new ArrayList<>();
@@ -694,6 +695,18 @@ public class CortexFsmEngine {
             ctx.output.put("coord_probe", new LinkedHashMap<>(probe));
         }
 
+        try {
+            Map<String, Object> inputSupport = execution != null
+                    ? execution.refreshTextInputSupportStatus()
+                    : new LinkedHashMap<String, Object>();
+            ctx.textInputSupport.clear();
+            if (inputSupport != null && !inputSupport.isEmpty()) {
+                ctx.textInputSupport.putAll(inputSupport);
+            }
+        } catch (Exception ignored) {
+            ctx.textInputSupport.clear();
+        }
+
         Map<String, Object> readyEv = new LinkedHashMap<>();
         readyEv.put("task_id", ctx.taskId);
         readyEv.put("device_info", new LinkedHashMap<>(ctx.deviceInfo));
@@ -701,6 +714,9 @@ public class CortexFsmEngine {
         readyEv.put("app_candidates", ctx.appCandidates.size());
         readyEv.put("page_candidates", ctx.pageCandidates.size());
         readyEv.put("coord_probe", ctx.coordProbe.isEmpty() ? null : new LinkedHashMap<>(ctx.coordProbe));
+        readyEv.put("text_input_support", ctx.textInputSupport.isEmpty()
+                ? null
+                : new LinkedHashMap<>(ctx.textInputSupport));
         trace.event("fsm_init_ready", readyEv);
 
         // Next: task decomposition (v2). Even if decomposition fails, the FSM will

@@ -1081,6 +1081,16 @@ private val ZhMap = mapOf(
     "UIAutomator" to "UIAutomator",
     "Touch input mode" to "触摸注入模式",
     "How taps/swipes are injected to the device." to "控制点击/滑动如何注入到设备。",
+    "Text input mode" to "文字输入方式",
+    "Recommended: install ADB Keyboard. If detected, core will switch to it only while typing, then restore your original keyboard automatically." to "推荐安装 ADB Keyboard。检测到后，core 会只在输入文字时临时切换到它，输入完再自动切回你原来的输入法。",
+    "If ADB Keyboard is not detected, fallback input will still work, but some apps may fail to accept Chinese text." to "如果没检测到 ADB Keyboard，兜底输入仍然可用，但有些应用里中文输入可能会失败。",
+    "Check ADB Keyboard" to "检查 ADB Keyboard",
+    "Detected" to "已检测到",
+    "Not detected" to "未检测到",
+    "Download ADB Keyboard" to "下载 ADB Keyboard",
+    "Current keyboard" to "当前输入法",
+    "Auto-switch input channel is ready." to "自动切换输入通道已就绪。",
+    "Core will use fallback text input for now." to "当前将使用兜底文字输入方案。",
     "Shell input first" to "Shell 优先",
     "UiAutomation first" to "UiAutomation 优先",
     "Apply to core" to "应用到 Core",
@@ -3183,6 +3193,7 @@ fun LxbCoreConfigCard(viewModel: MainViewModel) {
     val lxbPort by viewModel.lxbPort.collectAsState()
     val touchMode by viewModel.touchMode.collectAsState()
     val taskDndMode by viewModel.taskDndMode.collectAsState()
+    val adbKeyboardUiState by viewModel.adbKeyboardUiState.collectAsState()
     val coreConfigResult by viewModel.coreConfigResult.collectAsState()
     val coreRuntime by viewModel.coreRuntimeStatus.collectAsState()
 
@@ -3251,6 +3262,68 @@ fun LxbCoreConfigCard(viewModel: MainViewModel) {
                         onClick = { viewModel.setTouchMode(MainViewModel.TOUCH_MODE_UIAUTOMATION) },
                         modifier = Modifier.weight(1f)
                     )
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(tr("Text input mode"), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    tr("Recommended: install ADB Keyboard. If detected, core will switch to it only while typing, then restore your original keyboard automatically."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    tr("If ADB Keyboard is not detected, fallback input will still work, but some apps may fail to accept Chinese text."),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = buildString {
+                        append(tr(if (adbKeyboardUiState.installed) "Detected" else "Not detected"))
+                        if (adbKeyboardUiState.installed && adbKeyboardUiState.label.isNotBlank()) {
+                            append(": ")
+                            append(adbKeyboardUiState.label)
+                        }
+                    },
+                    fontSize = 12.sp,
+                    color = if (adbKeyboardUiState.installed) Color(0xFF2E7D32) else Color(0xFFE65100)
+                )
+                if (adbKeyboardUiState.currentImeId.isNotBlank()) {
+                    Text(
+                        text = "${tr("Current keyboard")}: ${adbKeyboardUiState.currentImeId}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                    )
+                }
+                Text(
+                    text = tr(
+                        if (adbKeyboardUiState.installed) {
+                            "Auto-switch input channel is ready."
+                        } else {
+                            "Core will use fallback text input for now."
+                        }
+                    ),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                )
+                OutlinedButton(
+                    onClick = { viewModel.refreshAdbKeyboardStatus() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(tr("Check ADB Keyboard"))
+                }
+                if (adbKeyboardUiState.checked && !adbKeyboardUiState.installed) {
+                    OutlinedButton(
+                        onClick = { viewModel.openAdbKeyboardReleasePage() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(tr("Download ADB Keyboard"))
+                    }
                 }
             }
         }

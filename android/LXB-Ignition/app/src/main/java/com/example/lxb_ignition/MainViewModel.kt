@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -67,6 +68,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val error: String = ""
     )
 
+    data class AdbKeyboardUiState(
+        val checked: Boolean = false,
+        val installed: Boolean = false,
+        val label: String = "",
+        val packageName: String = "",
+        val currentImeId: String = "",
+        val usingNow: Boolean = false
+    )
+
     companion object {
         private const val PREFS_NAME = "lxb_config"
         private const val KEY_LXB_PORT = "lxb_port"
@@ -91,10 +101,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val DEFAULT_MAP_REPO_RAW_BASE_URL = "https://raw.githubusercontent.com/wuwei-crg/LXB-MapRepo/main"
         private const val RELEASE_API_LATEST = "https://api.github.com/repos/wuwei-crg/LXB-Framework/releases/latest"
         private const val RELEASE_WEB_LATEST = "https://github.com/wuwei-crg/LXB-Framework/releases/latest"
+        private const val ADB_KEYBOARD_RELEASE_LATEST = "https://github.com/senzhk/ADBKeyBoard/releases/latest"
         private const val DEFAULT_LLM_CONFIG_PATH = "/data/local/tmp/lxb-llm-config.json"
 
         // Local TCP port for trace push from lxb-core.
         private const val TRACE_PUSH_PORT = 23456
+        private const val ADB_KEYBOARD_PACKAGE = "com.android.adbkeyboard"
+        private const val ADB_KEYBOARD_OPENATX_PACKAGE = "com.github.uiautomator"
 
         const val REPEAT_ONCE = "once"
         const val REPEAT_DAILY = "daily"
@@ -168,6 +181,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val traceLoadingOlder: StateFlow<Boolean> = _traceLoadingOlder.asStateFlow()
     private val _traceExportUiState = MutableStateFlow(TraceExportUiState())
     val traceExportUiState: StateFlow<TraceExportUiState> = _traceExportUiState.asStateFlow()
+    private val _adbKeyboardUiState = MutableStateFlow(AdbKeyboardUiState())
+    val adbKeyboardUiState: StateFlow<AdbKeyboardUiState> = _adbKeyboardUiState.asStateFlow()
 
     // Config: lxb-core server
     val lxbPort = MutableStateFlow(
@@ -360,6 +375,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         refreshRootAvailability()
         refreshWirelessDebuggingEnabled()
+        refreshAdbKeyboardStatus()
     }
 
     fun startServerWithNative() {
@@ -442,6 +458,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Settings.Global.getInt(app.contentResolver, "adb_wifi_enabled", 0) == 1
         }.getOrDefault(false)
         _wirelessDebuggingEnabled.value = enabled
+    }
+
+    fun refreshAdbKeyboardStatus() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val currentImeId = runCatching {
+                Settings.Secure.getString(app.contentResolver, "default_input_method").orEmpty().trim()
+            }.getOrDefault("")
+
+            val detected = when {
+                isPackageInstalled(app, ADB_KEYBOARD_PACKAGE) -> {
+                    AdbKeyboardUiState(
+                        checked = true,
+                        installed = true,
+                        label = "ADB Keyboard",
+                        packageName = ADB_KEYBOARD_PACKAGE,
+                        currentImeId = currentImeId,
+                        usingNow = currentImeId.startsWith("$ADB_KEYBOARD_PACKAGE/")
+                    )
+                }
+
+                isPackageInstalled(app, ADB_KEYBOARD_OPENATX_PACKAGE) -> {
+                    AdbKeyboardUiState(
+                        checked = true,
+                        installed = true,
+                        label = "OpenATX AdbKeyboard",
+                        packageName = ADB_KEYBOARD_OPENATX_PACKAGE,
+                        currentImeId = currentImeId,
+                        usingNow = currentImeId.startsWith("$ADB_KEYBOARD_OPENATX_PACKAGE/")
+                    )
+                }
+
+                else -> {
+                    AdbKeyboardUiState(
+                        checked = true,
+                        installed = false,
+                        currentImeId = currentImeId
+                    )
+                }
+            }
+            _adbKeyboardUiState.value = detected
+        }
     }
 
     fun startWirelessBootstrapGuide() {
@@ -1537,7 +1595,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openLatestReleasePage() {
-        openUrl(RELEASE_WEB_LATEST)
+        openUrl(RELEASE_WEB_LATEST) { msg ->
+            appUpdateResult.value = localizeUpdateMessage(msg)
+        }
+    }
+
+    fun openAdbKeyboardReleasePage() {
+        openUrl(ADB_KEYBOARD_RELEASE_LATEST) { msg ->
+            coreConfigResult.value = UiMessageLocalizer.localize(uiLang.value, msg)
+        }
     }
 
     fun setTouchMode(mode: String) {
@@ -1590,10 +1656,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun openUrl(url: String) {
+    private fun openUrl(url: String, onFailure: ((String) -> Unit)? = null) {
         val u = url.trim()
         if (u.isBlank()) {
-            appUpdateResult.value = localizeUpdateMessage("Invalid update URL.")
+            val msg = "Invalid update URL."
+            if (onFailure != null) {
+                onFailure(msg)
+            } else {
+                appUpdateResult.value = localizeUpdateMessage(msg)
+            }
             return
         }
         runCatching {
@@ -1602,8 +1673,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             getApplication<Application>().startActivity(intent)
         }.onFailure { e ->
-            appUpdateResult.value = localizeUpdateMessage("Failed to open browser: ${e.message}")
-            appendLog("[UPDATE] Failed to open browser: ${e.message}")
+            val msg = "Failed to open browser: ${e.message}"
+            if (onFailure != null) {
+                onFailure(msg)
+            } else {
+                appUpdateResult.value = localizeUpdateMessage(msg)
+            }
+            appendLog("[UPDATE] $msg")
         }
     }
 
@@ -1655,6 +1731,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lxbPort.value = normalized
             prefs.edit().putString(KEY_LXB_PORT, normalized).apply()
         }
+    }
+
+    private fun isPackageInstalled(app: Application, packageName: String): Boolean {
+        return runCatching {
+            val pm = app.packageManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(packageName, 0)
+            }
+            true
+        }.getOrDefault(false)
     }
 
     private fun appendLog(line: String) {

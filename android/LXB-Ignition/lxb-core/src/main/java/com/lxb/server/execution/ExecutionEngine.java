@@ -36,6 +36,7 @@ public class ExecutionEngine {
     private static final int INPUT_METHOD_ADB = 0;
     private static final int INPUT_METHOD_CLIPBOARD = 1;
     private static final int INPUT_METHOD_ACCESSIBILITY = 2;
+    private static final int INPUT_METHOD_ADB_KEYBOARD = 3;
 
     /**
      * 设置 UiAutomation 依赖
@@ -54,6 +55,13 @@ public class ExecutionEngine {
         if (uiAutomation == null) {
             System.err.println(TAG + " WARNING: UiAutomation not set!");
         }
+    }
+
+    public Map<String, Object> refreshTextInputSupportStatus() {
+        if (uiAutomation == null) {
+            return new LinkedHashMap<>();
+        }
+        return uiAutomation.refreshAdbKeyboardStatus();
     }
 
     /**
@@ -228,8 +236,17 @@ public class ExecutionEngine {
         int actualMethod = method;
         boolean success = false;
 
+        if (uiAutomation.hasAdbKeyboardAvailable()) {
+            success = uiAutomation.inputTextByAdbKeyboard(text);
+            if (success) {
+                actualMethod = INPUT_METHOD_ADB_KEYBOARD;
+            } else {
+                System.err.println(TAG + " INPUT_TEXT adb_keyboard failed, fallback to legacy path");
+            }
+        }
+
         // 优先按客户端指定 method 执行；失败后自动回退。
-        if (method == INPUT_METHOD_CLIPBOARD) {
+        if (!success && method == INPUT_METHOD_CLIPBOARD) {
             // Prefer ACTION_SET_TEXT first for complex text (Chinese/emoji), then fallback.
             success = uiAutomation.setFocusedText(text);
             actualMethod = INPUT_METHOD_ACCESSIBILITY;
@@ -241,14 +258,14 @@ public class ExecutionEngine {
                 success = uiAutomation.inputTextDirect(text);
                 actualMethod = INPUT_METHOD_ADB;
             }
-        } else if (method == INPUT_METHOD_ADB) {
+        } else if (!success && method == INPUT_METHOD_ADB) {
             success = uiAutomation.inputTextDirect(text);
             actualMethod = INPUT_METHOD_ADB;
             if (!success) {
                 success = uiAutomation.setFocusedText(text);
                 actualMethod = INPUT_METHOD_ACCESSIBILITY;
             }
-        } else if (method == INPUT_METHOD_ACCESSIBILITY) {
+        } else if (!success && method == INPUT_METHOD_ACCESSIBILITY) {
             success = uiAutomation.setFocusedText(text);
             actualMethod = INPUT_METHOD_ACCESSIBILITY;
             if (!success) {
@@ -259,7 +276,7 @@ public class ExecutionEngine {
                 success = uiAutomation.inputTextDirect(text);
                 actualMethod = INPUT_METHOD_ADB;
             }
-        } else {
+        } else if (!success) {
             success = uiAutomation.setFocusedText(text);
             actualMethod = INPUT_METHOD_ACCESSIBILITY;
             if (!success) {

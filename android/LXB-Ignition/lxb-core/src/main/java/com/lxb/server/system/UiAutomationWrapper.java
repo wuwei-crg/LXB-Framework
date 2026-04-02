@@ -12,7 +12,9 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.Base64;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -29,6 +31,10 @@ public class UiAutomationWrapper {
 
     private static final String TAG = "[LXB][UiAuto]";
     private static final int SWIPE_MIN_DURATION_MS = 1500;
+    private static final String ADB_IME_STANDARD_ID = "com.android.adbkeyboard/.AdbIME";
+    private static final String ADB_IME_STANDARD_PACKAGE = "com.android.adbkeyboard";
+    private static final String ADB_IME_OPENATX_ID = "com.github.uiautomator/.AdbKeyboard";
+    private static final String ADB_IME_OPENATX_PACKAGE = "com.github.uiautomator";
     private static volatile boolean preferShellInputTouch = true;
     private final Map<String, String> shellLabelCache = new HashMap<>();
     private final Map<String, String> shellGlobalLabelMapCache = new HashMap<>();
@@ -37,6 +43,10 @@ public class UiAutomationWrapper {
     private final String externalAppLabelsPath = resolveExternalAppLabelsPath();
     private final Map<String, String> externalLabelsCache = new HashMap<>();
     private long externalLabelsLastModified = -1L;
+    private final Object adbKeyboardLock = new Object();
+    private long adbKeyboardStatusTs = 0L;
+    private AdbKeyboardProfile adbKeyboardProfile =
+            new AdbKeyboardProfile(false, "", "", "", "", "", false);
 
     // 反射获取的 UiAutomation 实例
     private Object uiAutomation;
@@ -103,6 +113,7 @@ public class UiAutomationWrapper {
 
         // 获取屏幕信息
         fetchScreenInfo();
+        refreshAdbKeyboardStatus();
 
         System.out.println(TAG + " Initialized successfully");
         System.out.println(TAG + " Screen: " + screenWidth + "x" + screenHeight + " @" + screenDensity + "dpi");
@@ -115,6 +126,34 @@ public class UiAutomationWrapper {
 
     public boolean isPreferShellInputTouch() {
         return preferShellInputTouch;
+    }
+
+    private static final class AdbKeyboardProfile {
+        final boolean available;
+        final String imeId;
+        final String packageName;
+        final String variant;
+        final String broadcastAction;
+        final String extraKey;
+        final boolean useBase64;
+
+        AdbKeyboardProfile(
+                boolean available,
+                String imeId,
+                String packageName,
+                String variant,
+                String broadcastAction,
+                String extraKey,
+                boolean useBase64
+        ) {
+            this.available = available;
+            this.imeId = imeId != null ? imeId : "";
+            this.packageName = packageName != null ? packageName : "";
+            this.variant = variant != null ? variant : "";
+            this.broadcastAction = broadcastAction != null ? broadcastAction : "";
+            this.extraKey = extraKey != null ? extraKey : "";
+            this.useBase64 = useBase64;
+        }
     }
 
     /**
@@ -1743,6 +1782,172 @@ public class UiAutomationWrapper {
             if (process != null) {
                 try { process.destroy(); } catch (Exception ignored) {}
             }
+        }
+    }
+
+    public Map<String, Object> refreshAdbKeyboardStatus() {
+        synchronized (adbKeyboardLock) {
+            ShellCommandResult imeList = runShellCommand("ime list -s -a", 3000);
+            String currentIme = getCurrentInputMethodId();
+            adbKeyboardProfile = resolveAdbKeyboardProfile(imeList.stdout);
+            adbKeyboardStatusTs = System.currentTimeMillis();
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("available", adbKeyboardProfile.available);
+            out.put("ime_id", adbKeyboardProfile.imeId);
+            out.put("package", adbKeyboardProfile.packageName);
+            out.put("variant", adbKeyboardProfile.variant);
+            out.put("current_ime", currentIme);
+            out.put("using_now", adbKeyboardProfile.available && adbKeyboardProfile.imeId.equals(currentIme));
+            return out;
+        }
+    }
+
+    public Map<String, Object> getAdbKeyboardStatus() {
+        synchronized (adbKeyboardLock) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            String currentIme = getCurrentInputMethodId();
+            out.put("available", adbKeyboardProfile.available);
+            out.put("ime_id", adbKeyboardProfile.imeId);
+            out.put("package", adbKeyboardProfile.packageName);
+            out.put("variant", adbKeyboardProfile.variant);
+            out.put("current_ime", currentIme);
+            out.put("using_now", adbKeyboardProfile.available && adbKeyboardProfile.imeId.equals(currentIme));
+            return out;
+        }
+    }
+
+    public boolean hasAdbKeyboardAvailable() {
+        synchronized (adbKeyboardLock) {
+            if (adbKeyboardProfile.available) {
+                return true;
+            }
+            if (adbKeyboardStatusTs > 0L) {
+                return false;
+            }
+        }
+        Map<String, Object> status = refreshAdbKeyboardStatus();
+        Object available = status.get("available");
+        return available instanceof Boolean && ((Boolean) available).booleanValue();
+    }
+
+    private AdbKeyboardProfile resolveAdbKeyboardProfile(String imeList) {
+        String raw = imeList != null ? imeList : "";
+        if (raw.contains(ADB_IME_STANDARD_ID)) {
+            return new AdbKeyboardProfile(
+                    true,
+                    ADB_IME_STANDARD_ID,
+                    ADB_IME_STANDARD_PACKAGE,
+                    "adb_keyboard",
+                    "ADB_INPUT_B64",
+                    "msg",
+                    true
+            );
+        }
+        if (raw.contains(ADB_IME_OPENATX_ID)) {
+            return new AdbKeyboardProfile(
+                    true,
+                    ADB_IME_OPENATX_ID,
+                    ADB_IME_OPENATX_PACKAGE,
+                    "openatx_adb_keyboard",
+                    "ADB_KEYBOARD_INPUT_TEXT",
+                    "text",
+                    false
+            );
+        }
+        return new AdbKeyboardProfile(false, "", "", "", "", "", false);
+    }
+
+    private String getCurrentInputMethodId() {
+        ShellCommandResult res = runShellCommand("settings get secure default_input_method", 1500);
+        if (!res.ok) {
+            return "";
+        }
+        String out = res.stdout != null ? res.stdout.trim() : "";
+        if ("null".equalsIgnoreCase(out)) {
+            return "";
+        }
+        return out;
+    }
+
+    private boolean switchInputMethod(String imeId) {
+        if (imeId == null || imeId.trim().isEmpty()) {
+            return false;
+        }
+        String target = imeId.trim();
+        runShellCommand("ime enable " + shellQuote(target), 2500);
+        ShellCommandResult setRes = runShellCommand("ime set " + shellQuote(target), 2500);
+        if (!setRes.ok) {
+            runShellCommand("settings put secure default_input_method " + shellQuote(target), 2500);
+        }
+        return target.equals(getCurrentInputMethodId());
+    }
+
+    private void restoreInputMethod(String previousImeId, String adbImeId) {
+        String prev = previousImeId != null ? previousImeId.trim() : "";
+        if (prev.isEmpty()) {
+            runShellCommand("ime reset", 2500);
+            return;
+        }
+        if (prev.equals(adbImeId)) {
+            return;
+        }
+        if (!switchInputMethod(prev)) {
+            runShellCommand("settings put secure default_input_method " + shellQuote(prev), 2500);
+        }
+    }
+
+    private String shellQuote(String text) {
+        String s = text != null ? text : "";
+        return "'" + s.replace("'", "'\"'\"'") + "'";
+    }
+
+    public boolean inputTextByAdbKeyboard(String text) {
+        if (text == null) {
+            text = "";
+        }
+        AdbKeyboardProfile profile;
+        synchronized (adbKeyboardLock) {
+            if (!adbKeyboardProfile.available) {
+                refreshAdbKeyboardStatus();
+            }
+            profile = adbKeyboardProfile;
+        }
+        if (!profile.available) {
+            return false;
+        }
+
+        String previousIme = getCurrentInputMethodId();
+        boolean switched = profile.imeId.equals(previousIme);
+        try {
+            if (!switched) {
+                switched = switchInputMethod(profile.imeId);
+                if (!switched) {
+                    System.err.println(TAG + " inputTextByAdbKeyboard: switch failed for " + profile.imeId);
+                    return false;
+                }
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignored) {
+                }
+            }
+
+            String payload = profile.useBase64
+                    ? Base64.getEncoder().encodeToString(text.getBytes(StandardCharsets.UTF_8))
+                    : text;
+            String cmd = "am broadcast -a " + profile.broadcastAction
+                    + " --es " + profile.extraKey + " " + shellQuote(payload);
+            ShellCommandResult res = runShellCommand(cmd, 4000);
+            boolean ok = res.ok && (res.stdout.contains("result=-1") || res.stdout.contains("Broadcast completed"));
+            if (!ok) {
+                System.err.println(TAG + " inputTextByAdbKeyboard failed: stdout=" + res.stdout + " stderr=" + res.stderr);
+                return false;
+            }
+            System.out.println(TAG + " inputTextByAdbKeyboard: OK variant=" + profile.variant
+                    + " chars=" + text.length());
+            return true;
+        } finally {
+            restoreInputMethod(previousIme, profile.imeId);
         }
     }
 
