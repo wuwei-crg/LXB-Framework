@@ -65,6 +65,8 @@ public class CortexTaskManager {
     private static final String DEFAULT_SCHEDULES_PATH = "/data/local/tmp/lxb/schedules.v1.json";
     private static final String DEFAULT_TASK_RUNS_PATH = "/data/local/tmp/lxb/task_runs.v1.json";
     private static final String DEFAULT_RECORD_ROOT = "/sdcard/Movies/lxb";
+    private static final int RECORD_SEGMENT_TIME_LIMIT_SEC = 170;
+    private static final long RECORD_SEGMENT_ROTATE_CHECK_MS = 1000L;
     private final String schedulesPath;
     private final String taskRunsPath;
     private final CortexTaskPersistence persistence = new CortexTaskPersistence();
@@ -543,15 +545,11 @@ public class CortexTaskManager {
                                     return;
                                 }
                                 try {
-                                    Map<String, Object> recArgs = new LinkedHashMap<String, Object>();
-                                    recArgs.put("path", hooks.recordPath);
-                                    Map<String, Object> rec = fsmEngine.runSystemControl(
-                                            instance.taskId,
-                                            "screen_record_start",
-                                            recArgs
-                                    );
-                                    hooks.recordStarted = toBool(rec.get("ok"), false);
+                                    hooks.recordStarted = startRecordSegment(instance, hooks, hooks.recordPath);
                                     instance.recordStarted = hooks.recordStarted;
+                                    if (hooks.recordStarted) {
+                                        startRecordRotateThread(instance, hooks);
+                                    }
                                 } catch (Exception ignored) {
                                     hooks.recordStarted = false;
                                     instance.recordStarted = false;
@@ -648,7 +646,8 @@ public class CortexTaskManager {
 
         // Recording is schedule-controlled; manual tasks default to off.
         if (req.recordEnabled) {
-            hooks.recordPath = buildRecordFilePath(instance.taskId, instance.startedAt);
+            hooks.recordSegmentIndex = 1;
+            hooks.recordPath = buildRecordFilePath(instance.taskId, instance.startedAt, hooks.recordSegmentIndex);
             instance.recordFilePath = hooks.recordPath;
             hooks.recordStarted = false;
             instance.recordStarted = false;
@@ -657,12 +656,28 @@ public class CortexTaskManager {
     }
 
     private void applyTaskSessionEnd(TaskInstance instance, TaskSessionHooks hooks) {
+        if (hooks != null) {
+            hooks.recordStopRequested = true;
+            if (hooks.recordRotateThread != null) {
+                hooks.recordRotateThread.interrupt();
+                try {
+                    hooks.recordRotateThread.join(1500L);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
         // Stop recording first, then restore DND.
         if (hooks != null && hooks.recordStarted) {
             try {
-                fsmEngine.runSystemControl(instance.taskId, "screen_record_stop", new LinkedHashMap<String, Object>());
+                synchronized (hooks.recordLock) {
+                    fsmEngine.runSystemControl(instance.taskId, "screen_record_stop", new LinkedHashMap<String, Object>());
+                }
             } catch (Exception ignored) {
             }
+        }
+        if (hooks != null && !hooks.recordSegments.isEmpty()) {
+            instance.recordFilePath = joinRecordSegments(hooks.recordSegments);
         }
         if (hooks != null && !"skip".equals(hooks.dndMode)) {
             try {
@@ -691,13 +706,97 @@ public class CortexTaskManager {
         return "none";
     }
 
-    private static String buildRecordFilePath(String taskId, long startedAtMs) {
+    private static String buildRecordFilePath(String taskId, long startedAtMs, int segmentIndex) {
         String safeTaskId = taskId != null && !taskId.trim().isEmpty()
                 ? taskId.trim().replaceAll("[^A-Za-z0-9._-]", "_")
                 : "unknown_task";
         long ts = startedAtMs > 0L ? startedAtMs : System.currentTimeMillis();
-        String fileName = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date(ts)) + ".mp4";
+        int safeSegmentIndex = Math.max(1, segmentIndex);
+        String fileName = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date(ts))
+                + "_part_" + String.format(Locale.US, "%03d", safeSegmentIndex) + ".mp4";
         return DEFAULT_RECORD_ROOT + "/" + safeTaskId + "/" + fileName;
+    }
+
+    private boolean startRecordSegment(TaskInstance instance, TaskSessionHooks hooks, String path) {
+        synchronized (hooks.recordLock) {
+            Map<String, Object> recArgs = new LinkedHashMap<String, Object>();
+            recArgs.put("path", path);
+            recArgs.put("time_limit_sec", RECORD_SEGMENT_TIME_LIMIT_SEC);
+            Map<String, Object> rec = fsmEngine.runSystemControl(
+                    instance.taskId,
+                    "screen_record_start",
+                    recArgs
+            );
+            boolean ok = toBool(rec.get("ok"), false);
+            hooks.recordStarted = ok;
+            if (ok) {
+                hooks.recordPath = path;
+                hooks.recordSegmentStartedAt = System.currentTimeMillis();
+                if (!hooks.recordSegments.contains(path)) {
+                    hooks.recordSegments.add(path);
+                }
+                instance.recordFilePath = joinRecordSegments(hooks.recordSegments);
+            }
+            return ok;
+        }
+    }
+
+    private void rotateRecordSegment(TaskInstance instance, TaskSessionHooks hooks) {
+        synchronized (hooks.recordLock) {
+            if (hooks.recordStopRequested || !hooks.recordStarted) {
+                return;
+            }
+            try {
+                fsmEngine.runSystemControl(instance.taskId, "screen_record_stop", new LinkedHashMap<String, Object>());
+            } catch (Exception ignored) {
+            }
+            hooks.recordStarted = false;
+            instance.recordStarted = false;
+            hooks.recordSegmentIndex += 1;
+            String nextPath = buildRecordFilePath(instance.taskId, instance.startedAt, hooks.recordSegmentIndex);
+            boolean ok = startRecordSegment(instance, hooks, nextPath);
+            instance.recordStarted = ok;
+        }
+    }
+
+    private void startRecordRotateThread(TaskInstance instance, TaskSessionHooks hooks) {
+        if (hooks.recordRotateThread != null) {
+            return;
+        }
+        Thread t = new Thread(() -> {
+            while (!hooks.recordStopRequested) {
+                try {
+                    Thread.sleep(RECORD_SEGMENT_ROTATE_CHECK_MS);
+                } catch (InterruptedException e) {
+                    if (hooks.recordStopRequested) {
+                        return;
+                    }
+                }
+                if (hooks.recordStopRequested || !hooks.recordStarted) {
+                    continue;
+                }
+                long elapsedMs = System.currentTimeMillis() - hooks.recordSegmentStartedAt;
+                if (elapsedMs < (RECORD_SEGMENT_TIME_LIMIT_SEC - 2L) * 1000L) {
+                    continue;
+                }
+                rotateRecordSegment(instance, hooks);
+            }
+        }, "LxbRecordRotate-" + instance.taskId);
+        t.setDaemon(true);
+        hooks.recordRotateThread = t;
+        t.start();
+    }
+
+    private static String joinRecordSegments(List<String> segments) {
+        if (segments == null || segments.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < segments.size(); i++) {
+            if (i > 0) sb.append(" | ");
+            sb.append(segments.get(i));
+        }
+        return sb.toString();
     }
 
     private void registerTaskInstance(TaskInstance instance) {
@@ -772,6 +871,12 @@ public class CortexTaskManager {
         boolean recordEnabled;
         boolean recordStarted;
         String recordPath;
+        final List<String> recordSegments = new ArrayList<String>();
+        final Object recordLock = new Object();
+        volatile boolean recordStopRequested;
+        volatile long recordSegmentStartedAt;
+        volatile int recordSegmentIndex;
+        Thread recordRotateThread;
     }
 
     /**
