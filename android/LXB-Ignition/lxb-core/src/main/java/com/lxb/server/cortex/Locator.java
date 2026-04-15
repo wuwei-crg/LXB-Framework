@@ -13,7 +13,7 @@ import java.util.Map;
  * - class: string (often simple name)
  * - parent_rid: string (short id)
  * - bounds_hint: [l,t,r,b]
- * - index/count: optional (future)
+ * - locator_index/locator_count: optional MapBuilder-style disambiguation
  */
 public class Locator {
     public final String resourceId;
@@ -74,8 +74,12 @@ public class Locator {
             boundsHint = Bounds.fromList(list);
         }
 
-        Integer index = o.containsKey("index") ? toInt(o.get("index")) : null;
-        Integer count = o.containsKey("count") ? toInt(o.get("count")) : null;
+        Integer index = o.containsKey("locator_index")
+                ? toInt(o.get("locator_index"))
+                : (o.containsKey("index") ? toInt(o.get("index")) : null);
+        Integer count = o.containsKey("locator_count")
+                ? toInt(o.get("locator_count"))
+                : (o.containsKey("count") ? toInt(o.get("count")) : null);
 
         return new Locator(resourceId, text, contentDesc, className, parentRid, boundsHint, index, count);
     }

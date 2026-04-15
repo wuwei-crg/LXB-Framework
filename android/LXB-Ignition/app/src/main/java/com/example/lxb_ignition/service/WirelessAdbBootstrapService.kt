@@ -141,14 +141,7 @@ class WirelessAdbBootstrapService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> startBootstrap()
-            ACTION_START_GUIDE -> {
-                startBootstrap()
-                val ok = openSettings(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                if (!ok) {
-                    setState("GUIDE_SETTINGS", "Failed to open Developer Options automatically.")
-                    updateNotification()
-                }
-            }
+            ACTION_START_GUIDE -> startBootstrap()
             ACTION_START_CORE_NATIVE -> startCoreNative()
             ACTION_START_CORE_ROOT_DIRECT -> startCoreRootDirect()
             ACTION_STOP_CORE_NATIVE -> stopCoreNative()

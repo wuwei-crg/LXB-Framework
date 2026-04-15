@@ -2,7 +2,9 @@
 
 import android.Manifest
 import android.app.DatePickerDialog
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.Settings
 import android.os.Bundle
 import android.widget.EditText
 import android.widget.NumberPicker
@@ -79,6 +81,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -114,6 +117,10 @@ import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        private const val ACTION_WIRELESS_DEBUGGING_SETTINGS = "android.settings.WIRELESS_DEBUGGING_SETTINGS"
+    }
+
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -126,13 +133,50 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openSystemSettings(action: String): Boolean {
+        return runCatching {
+            startActivity(
+                Intent(action).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun openDeveloperOptionsSettings() {
+        val ok = openSystemSettings(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+        if (!ok) {
+            Toast.makeText(
+                this,
+                "Failed to open Developer Options automatically.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    private fun openWirelessDebuggingSettingsFromUi() {
+        val ok = openSystemSettings(ACTION_WIRELESS_DEBUGGING_SETTINGS)
+            || openSystemSettings(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+        if (!ok) {
+            Toast.makeText(
+                this,
+                "Failed to open Wireless debugging settings automatically.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ensureNotificationPermissionOnLaunch()
         enableEdgeToEdge()
         setContent {
             LXBIgnitionTheme {
-                LXBIgnitionApp()
+                LXBIgnitionApp(
+                    onOpenDeveloperOptionsSettings = { openDeveloperOptionsSettings() },
+                    onOpenWirelessDebuggingSettings = { openWirelessDebuggingSettingsFromUi() }
+                )
             }
         }
     }
@@ -151,7 +195,11 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
+fun LXBIgnitionApp(
+    viewModel: MainViewModel = viewModel(),
+    onOpenDeveloperOptionsSettings: () -> Unit = {},
+    onOpenWirelessDebuggingSettings: () -> Unit = {}
+) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     val uiLang by viewModel.uiLang.collectAsState()
     val appUpdateResult by viewModel.appUpdateResult.collectAsState()
@@ -221,7 +269,9 @@ fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
                 0 -> ControlTab(
                     viewModel = viewModel,
                     modifier = Modifier.padding(innerPadding),
-                    onOpenConfig = { selectedTab = 2 }
+                    onOpenConfig = { selectedTab = 2 },
+                    onOpenDeveloperOptionsSettings = onOpenDeveloperOptionsSettings,
+                    onOpenWirelessDebuggingSettings = onOpenWirelessDebuggingSettings
                 )
                 1 -> TasksTab(viewModel, Modifier.padding(innerPadding))
                 2 -> ConfigTab(viewModel, Modifier.padding(innerPadding))
@@ -322,7 +372,9 @@ private fun resolveWirelessGuideUiState(status: WirelessBootstrapStatus): Wirele
 fun ControlTab(
     viewModel: MainViewModel,
     modifier: Modifier = Modifier,
-    onOpenConfig: () -> Unit = {}
+    onOpenConfig: () -> Unit = {},
+    onOpenDeveloperOptionsSettings: () -> Unit = {},
+    onOpenWirelessDebuggingSettings: () -> Unit = {}
 ) {
     val coreRuntime by viewModel.coreRuntimeStatus.collectAsState()
     val wireless by viewModel.wirelessBootstrapStatus.collectAsState()
@@ -349,9 +401,12 @@ fun ControlTab(
             WirelessGuidePage(
                 status = wireless,
                 wirelessDebuggingEnabled = wirelessDebuggingEnabled,
-                onStartGuide = { viewModel.startWirelessBootstrapGuide() },
+                onStartGuide = {
+                    onOpenDeveloperOptionsSettings()
+                    viewModel.startWirelessBootstrapGuide()
+                },
                 onStartDirect = { viewModel.startServerWithNative() },
-                onOpenWirelessDebugging = { viewModel.openWirelessDebuggingSettings() },
+                onOpenWirelessDebugging = onOpenWirelessDebuggingSettings,
                 onRefreshState = {
                     viewModel.refreshWirelessDebuggingEnabled()
                     viewModel.refreshCoreRuntimeStatusNow()
@@ -1665,11 +1720,13 @@ private val ZhMap = mapOf(
     "Force use map" to "强制使用地图",
     "Force no map" to "强制不使用地图",
     "Back" to "返回",
+    "Close" to "关闭",
     "New" to "新建",
     "Refresh" to "刷新",
     "Task Details" to "任务详情",
     "Task route detail" to "任务路线详情",
     "Task route key" to "任务路线键",
+    "Task route mode" to "按路线执行",
     "No task summary available yet." to "暂时没有任务摘要。",
     "Loading task route details..." to "正在加载任务路线详情...",
     "Task ID" to "任务 ID",
@@ -1694,7 +1751,10 @@ private val ZhMap = mapOf(
     "Task route editing is available after the task config has been saved once." to "任务配置至少保存一次后，才能编辑对应的任务路线。",
     "No task route data yet." to "暂时还没有任务路线数据。",
     "Tap a card to view full details." to "点击卡片查看完整详情。",
-    "Review the captured path, delete noisy actions, and save only the useful route." to "查看已记录路径，删除噪声动作，只保留有用路线。",
+    "Review the latest captured path, delete noisy actions, and save only the useful route." to "查看最近一次记录到的路径，删除噪声动作，只保留有用路线。",
+    "Editable Trace" to "可编辑轨迹",
+    "The newest captured trace is editable, even if the task did not finish successfully." to "最近一次记录到的轨迹都可以编辑，即使任务最终没有成功完成。",
+    "No captured trace yet." to "暂时还没有可编辑的轨迹。",
     "Summary" to "摘要",
     "Task route target" to "任务路线目标",
     "Refresh detail" to "刷新详情",
@@ -1736,10 +1796,11 @@ private val ZhMap = mapOf(
     "Delete from saved route" to "从已保存路线中删除",
     "Save manual route" to "手动保存路线",
     "Saving..." to "保存中...",
-    "Finish after replay" to "回放后直接完成任务",
-    "If enabled, a successful task-route replay skips VISION_ACT and finishes the current sub-task directly." to "开启后，任务路线回放成功会跳过 VISION_ACT，直接完成当前子任务。",
+    "Finish after replay" to "回放结束后直接结束任务",
+    "If enabled, a successful task-route replay skips VISION_ACT and finishes the current sub-task directly." to "开启后，路线回放成功将直接结束当前任务，不再进入后续视觉执行。",
     "No trace actions yet." to "暂时还没有轨迹动作。",
     "App label" to "应用名称",
+    "Status" to "状态",
     "Final state" to "最终状态",
     "Next run" to "下次运行",
     "Triggered count" to "触发次数",
@@ -1943,7 +2004,9 @@ private val ZhMap = mapOf(
     "API Base URL" to "API Base URL",
     "API Key" to "API Key",
     "Model" to "模型",
+    "On" to "开",
     "Please use a model with image recognition capability." to "请使用具有图像识别能力的模型。",
+    "e.g. gpt-4o-mini, qwen-plus" to "例如：gpt-4o-mini、qwen-plus",
     "Model routing" to "模型路由",
     "No model selected" to "尚未选择模型",
     "Draft only" to "仅草稿",
@@ -1952,6 +2015,7 @@ private val ZhMap = mapOf(
     "Test LLM & sync to device" to "测试 LLM 并同步到设备",
     "Save only" to "仅保存",
     "Save all config only" to "仅保存（保存所有配置）",
+    "Saved config" to "已保存配置",
     "Saved local configs" to "本地已保存配置",
     "Config name" to "配置名称",
     "Save as new" to "另存为新配置",
@@ -1984,12 +2048,13 @@ private val ZhMap = mapOf(
     "Used only when swipe unlock is not enough." to "仅在上滑解锁不足时使用。",
     "Sync to device" to "同步到设备",
     "Map sync & lane control" to "地图同步与轨道控制",
-    "Map repo raw base URL" to "Map 仓库 Raw Base URL",
+    "Map repo raw base URL" to "地图仓库 Raw 基础链接",
     "Use map routing" to "使用 Map 路由",
     "Use map routing is ON" to "地图路由：开启",
     "Use map routing is OFF" to "地图路由：关闭",
     "Source & repository" to "来源与仓库",
     "Choose where maps come from and which runtime lane stays active." to "选择地图的来源，以及运行时保持生效的轨道。",
+    "e.g. https://raw.githubusercontent.com/wuwei-crg/LXB-MapRepo/main" to "例如：https://raw.githubusercontent.com/wuwei-crg/LXB-MapRepo/main",
     "Identifier pull" to "按标识拉取",
     "Pick the app and map identifier used for pull-by-ID and active-map checks." to "选择用于按 ID 拉取和检查当前生效地图的应用与地图标识。",
     "Sync or pull route assets, inspect the active map, and save the current settings." to "同步或拉取路线资产、查看当前生效地图，并保存当前设置。",
@@ -2021,9 +2086,11 @@ private val ZhMap = mapOf(
     "Repeat a task later or keep it running on a schedule." to "让同一任务稍后执行，或按计划重复执行。",
     "Watch one app's notifications and launch a task when a rule matches." to "监听某个应用的通知，并在命中规则时自动执行任务。",
     "Review what just ran, what failed, and what route data was captured." to "查看刚刚执行了什么、哪里失败了，以及沉淀了哪些路线数据。",
+    "Review recent task runs, failures, and learned routes." to "查看最近任务执行、失败情况，以及路线数据。",
     "Create one when you want the phone to repeat the same task automatically." to "当你希望手机自动重复执行同一任务时，在这里创建。",
     "Create one after you know which app and message pattern should trigger the task." to "当你确定要监听哪个应用、哪类消息时，在这里创建。",
     "Submit a quick task, or wait for a schedule or notification trigger to fire." to "先提交一次快速任务，或等待定时任务或通知触发任务执行。",
+    "No runs yet." to "暂无运行记录。",
     "Enabled" to "已启用",
     "Paused" to "已暂停",
     "App" to "应用",
@@ -2052,6 +2119,7 @@ private val ZhMap = mapOf(
     "Listen to one app's notifications and fire a task automatically." to "监听某个应用的通知，并自动触发任务。",
     "Detailed steps stay inside each startup page." to "详细步骤保留在各自的启动页面中。",
     "Current status" to "当前状态",
+    "Idle" to "空闲",
     "Recommended for most phones" to "适合大多数手机",
     "Follow these steps" to "按下面步骤操作",
     "Stay on this page while you complete the steps on your phone." to "在手机上完成步骤时，请保持本页面打开。",
@@ -2066,19 +2134,19 @@ private val ZhMap = mapOf(
     "Execution target" to "执行目标",
     "Choose when the task runs and which app it should open first." to "选择任务的执行时间，以及它应先打开哪个应用。",
     "Execution preference" to "执行偏好",
-    "These settings affect recording and learned route behavior for this schedule." to "这些设置会影响该定时任务的录屏和路线沉淀行为。",
+    "These settings affect recording and manual route review for this schedule." to "这些设置会影响该定时任务的录屏和手动路线审查。",
     "Save schedule" to "保存定时任务",
     "Your schedule will appear in the list after it is saved." to "保存后，这条定时任务会出现在列表中。",
     "Set which notifications to listen for, then define what task should run." to "先设置监听哪些通知，再定义命中后执行什么任务。",
     "Name the rule and describe the task that should run after a match." to "给规则命名，并描述命中后要执行的任务。",
     "Trigger conditions" to "触发条件",
     "The rule checks package first, then title/body matching, then optional LLM condition." to "规则会先检查包名，再检查标题/正文匹配，最后再看可选的 LLM 条件。",
-    "These settings affect route learning and recording after the trigger is matched." to "这些设置会影响规则命中后的路线沉淀和录屏行为。",
+    "These settings affect manual route review and recording after the trigger is matched." to "这些设置会影响规则命中后的手动路线审查和录屏行为。",
     "Save trigger" to "保存触发规则",
     "The rule will appear in the notification trigger list after it is saved." to "保存后，这条规则会出现在通知触发任务列表中。",
     "This page edits the route asset for one exact task only." to "这个页面只编辑某一个精确任务对应的路线资产。",
-    "Replay behavior" to "回放行为",
-    "Choose whether a successful replay should finish the current sub-task immediately." to "选择路线成功回放后，是否直接结束当前子任务。"
+    "Replay behavior" to "回放结束后直接结束任务",
+    "Choose whether a successful replay should finish the current sub-task immediately." to "控制路线回放成功后，是否直接结束当前任务。"
 )
 
 private data class RouteEditorTarget(
@@ -2675,7 +2743,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
                         SheetHeader(
                             title = tr("Execution preference"),
-                            subtitle = tr("These settings affect recording and learned route behavior for this schedule.")
+                            subtitle = tr("These settings affect recording and manual route review for this schedule.")
                         )
                         Text(
                             text = tr("Task route mode"),
@@ -2693,13 +2761,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                 modifier = Modifier.weight(1f)
                             )
                             RepeatModeButton(
-                                text = tr("Auto learn"),
-                                selected = scheduleTaskMapMode == MainViewModel.TASK_MAP_MODE_AI,
-                                onClick = { viewModel.scheduleTaskMapMode.value = MainViewModel.TASK_MAP_MODE_AI },
-                                modifier = Modifier.weight(1f)
-                            )
-                            RepeatModeButton(
-                                text = tr("Manual"),
+                                text = tr("On"),
                                 selected = scheduleTaskMapMode == MainViewModel.TASK_MAP_MODE_MANUAL,
                                 onClick = { viewModel.scheduleTaskMapMode.value = MainViewModel.TASK_MAP_MODE_MANUAL },
                                 modifier = Modifier.weight(1f)
@@ -2969,7 +3031,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
                         SheetHeader(
                             title = tr("Execution preference"),
-                            subtitle = tr("These settings affect route learning and recording after the trigger is matched.")
+                            subtitle = tr("These settings affect manual route review and recording after the trigger is matched.")
                         )
                         Text(
                             text = tr("Task route mode"),
@@ -2987,13 +3049,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                 modifier = Modifier.weight(1f)
                             )
                             RepeatModeButton(
-                                text = tr("Auto learn"),
-                                selected = notifyActionTaskMapMode == MainViewModel.TASK_MAP_MODE_AI,
-                                onClick = { viewModel.notifyActionTaskMapMode.value = MainViewModel.TASK_MAP_MODE_AI },
-                                modifier = Modifier.weight(1f)
-                            )
-                            RepeatModeButton(
-                                text = tr("Manual"),
+                                text = tr("On"),
                                 selected = notifyActionTaskMapMode == MainViewModel.TASK_MAP_MODE_MANUAL,
                                 onClick = { viewModel.notifyActionTaskMapMode.value = MainViewModel.TASK_MAP_MODE_MANUAL },
                                 modifier = Modifier.weight(1f)
@@ -3285,7 +3341,10 @@ private fun TaskRouteEditorPage(
     onSaveManualTaskMap: (List<String>, Boolean) -> Unit
 ) {
     val scrollState = rememberScrollState()
-    var deleteActionIds by remember(routeDetail?.latestSuccessRecord?.createdAtMs, routeDetail?.latestSuccessRecord?.actions?.size) {
+    val editableRecord = routeDetail?.latestAttemptRecord ?: routeDetail?.latestSuccessRecord
+    val showSeparateSuccessRecord = routeDetail?.latestSuccessRecord != null &&
+        !isSameTaskRouteRecord(routeDetail.latestSuccessRecord, editableRecord)
+    var deleteActionIds by remember(editableRecord?.createdAtMs, editableRecord?.actions?.size) {
         mutableStateOf(setOf<String>())
     }
     var finishAfterReplay by remember(routeDetail?.taskMap?.createdAtMs, routeDetail?.taskMap?.finishAfterReplay) {
@@ -3319,7 +3378,7 @@ private fun TaskRouteEditorPage(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = tr("Review the captured path, delete noisy actions, and save only the useful route."),
+                    text = tr("Review the latest captured path, delete noisy actions, and save only the useful route."),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
                 )
@@ -3350,7 +3409,7 @@ private fun TaskRouteEditorPage(
                 if (target.source.isNotBlank()) DetailTextLine(tr("Source"), target.source)
                 if (target.sourceId.isNotBlank()) DetailTextLine(tr("Source ID"), target.sourceId)
                 if (target.packageName.isNotBlank()) DetailTextLine(tr("Package name"), target.packageName)
-                if (target.mode.isNotBlank()) DetailTextLine(tr("Task route mode"), target.mode)
+                if (target.mode.isNotBlank()) DetailTextLine(tr("Task route mode"), formatTaskRouteMode(target.mode))
                 Text(
                     text = tr("Tap a card to view full details."),
                     fontSize = 11.sp,
@@ -3405,9 +3464,9 @@ private fun TaskRouteEditorPage(
             TaskMapMetaSection(detail = routeDetail)
             SavedTaskMapSection(taskMap = routeDetail.taskMap)
             TaskRouteRecordSection(
-                title = tr("Latest Success Trace"),
-                emptyText = tr("No latest success trace yet."),
-                record = routeDetail.latestSuccessRecord,
+                title = tr("Editable Trace"),
+                emptyText = tr("No captured trace yet."),
+                record = editableRecord,
                 editable = true,
                 saving = saving,
                 selectedDeleteIds = deleteActionIds,
@@ -3420,11 +3479,16 @@ private fun TaskRouteEditorPage(
                 },
                 onSaveManual = { onSaveManualTaskMap(deleteActionIds.toList(), finishAfterReplay) }
             )
-            if (routeDetail.latestAttemptRecord != null) {
+            Text(
+                text = tr("The newest captured trace is editable, even if the task did not finish successfully."),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f)
+            )
+            if (showSeparateSuccessRecord) {
                 TaskRouteRecordSection(
-                    title = tr("Latest Attempt Trace"),
-                    emptyText = tr("No latest attempt trace yet."),
-                    record = routeDetail.latestAttemptRecord,
+                    title = tr("Latest Success Trace"),
+                    emptyText = tr("No latest success trace yet."),
+                    record = routeDetail.latestSuccessRecord,
                     editable = false,
                     saving = false,
                     selectedDeleteIds = emptySet(),
@@ -3451,6 +3515,17 @@ private fun TaskRouteEditorPage(
             }
         }
     }
+}
+
+private fun isSameTaskRouteRecord(
+    left: TaskRouteRecordSnapshot?,
+    right: TaskRouteRecordSnapshot?
+): Boolean {
+    if (left == null || right == null) return false
+    if (left === right) return true
+    return left.taskId == right.taskId &&
+        left.createdAtMs == right.createdAtMs &&
+        left.actions.size == right.actions.size
 }
 
 @Composable
@@ -3480,7 +3555,7 @@ private fun TaskSummarySection(task: TaskSummary) {
             if (task.packageName.isNotBlank()) DetailTextLine(tr("Package name"), task.packageName)
             if (task.targetPage.isNotBlank()) DetailTextLine(tr("Target page"), task.targetPage)
             if (task.source.isNotBlank()) DetailTextLine(tr("Source"), task.source)
-            if (task.taskMapMode.isNotBlank()) DetailTextLine(tr("Task route mode"), task.taskMapMode)
+            if (task.taskMapMode.isNotBlank()) DetailTextLine(tr("Task route mode"), formatTaskRouteMode(task.taskMapMode))
             DetailTextLine(tr("Saved task route"), if (task.hasTaskMap) tr("Yes") else tr("No"))
             if (task.scheduleId.isNotBlank()) DetailTextLine(tr("Schedule ID"), task.scheduleId)
             DetailTextLine(tr("Memory applied"), if (task.memoryApplied) tr("Yes") else tr("No"))
@@ -3501,7 +3576,7 @@ private fun TaskMapMetaSection(detail: TaskMapDetail) {
         ) {
             Text(tr("Task route detail"), style = MaterialTheme.typography.labelLarge)
             if (detail.taskKeyHash.isNotBlank()) DetailTextLine(tr("Task route key"), detail.taskKeyHash)
-            if (detail.mode.isNotBlank()) DetailTextLine(tr("Task route mode"), detail.mode)
+            if (detail.mode.isNotBlank()) DetailTextLine(tr("Task route mode"), formatTaskRouteMode(detail.mode))
             if (detail.source.isNotBlank()) DetailTextLine(tr("Source"), detail.source)
             if (detail.sourceId.isNotBlank()) DetailTextLine(tr("Source ID"), detail.sourceId)
             if (detail.packageName.isNotBlank()) DetailTextLine(tr("Package name"), detail.packageName)
@@ -3815,90 +3890,76 @@ fun ScheduleRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onEdit)
-            .padding(horizontal = 18.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.Top
     ) {
-        GlyphBadge(glyph = "⏰", accentColor = scheme.primary)
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 val title = if (schedule.name.isNotEmpty()) schedule.name else schedule.userTask
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.bodyLarge
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     if (schedule.name.isNotEmpty() && schedule.userTask != title) {
                         Text(
                             text = schedule.userTask,
-                            fontSize = 11.sp,
-                            color = scheme.onSurface.copy(alpha = 0.72f)
+                            fontSize = 10.sp,
+                            color = scheme.onSurface.copy(alpha = 0.72f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
-                StatusTag(
-                    text = if (schedule.enabled) tr("Enabled") else tr("Paused"),
-                    accentColor = if (schedule.enabled) AppSuccess else scheme.onSurface.copy(alpha = 0.55f)
+                Switch(
+                    checked = schedule.enabled,
+                    onCheckedChange = onToggleEnabled,
+                    colors = listToggleColors
                 )
             }
-            Text(
-                text = "${tr("Run time")}: ${formatTsFull(schedule.runAtMs)}",
-                fontSize = 11.sp,
-                color = scheme.onSurface.copy(alpha = 0.75f)
-            )
             Text(
                 text = "${tr("Repeat")}: ${formatRepeat(schedule.repeatMode, schedule.repeatWeekdays)}  •  ${tr("Next run")}: ${formatTsFull(schedule.nextRunAt)}",
-                fontSize = 11.sp,
-                color = scheme.onSurface.copy(alpha = 0.75f)
-            )
-            if (schedule.packageName.isNotEmpty()) {
-                Text(
-                    text = "${tr("App")}: ${schedule.packageName}",
-                    fontSize = 11.sp,
-                    color = scheme.onSurface.copy(alpha = 0.75f)
-                )
-            }
-            Text(
-                text = "${tr("Triggered count")}: ${schedule.triggerCount}  •  ${tr("Record")}: ${if (schedule.recordEnabled) tr("On") else tr("Off")}",
-                fontSize = 11.sp,
-                color = scheme.onSurface.copy(alpha = 0.75f)
+                fontSize = 10.sp,
+                color = scheme.onSurface.copy(alpha = 0.72f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val meta = buildList {
+                    if (schedule.packageName.isNotEmpty()) add("${tr("App")}: ${schedule.packageName}")
+                    add("${tr("Record")}: ${if (schedule.recordEnabled) tr("On") else tr("Off")}")
+                    add("${tr("Triggered count")}: ${schedule.triggerCount}")
+                }.joinToString("  •  ")
                 Text(
-                    text = "${tr("ID")}=${schedule.scheduleId.take(8)}...",
+                    text = meta,
+                    modifier = Modifier.weight(1f),
                     fontSize = 10.sp,
-                    color = scheme.onSurface.copy(alpha = 0.6f)
+                    color = scheme.onSurface.copy(alpha = 0.66f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                TextButton(
+                    onClick = onDelete,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp)
                 ) {
-                    Switch(
-                        checked = schedule.enabled,
-                        onCheckedChange = onToggleEnabled,
-                        colors = listToggleColors
-                    )
-                    OutlinedButton(
-                        onClick = onDelete,
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(30.dp)
-                    ) {
-                        Text(tr("Delete"), fontSize = 11.sp, color = scheme.error)
-                    }
+                    Text(tr("Delete"), fontSize = 10.sp, color = scheme.error)
                 }
             }
         }
@@ -3925,14 +3986,12 @@ fun NotificationRuleRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onEdit)
-            .padding(horizontal = 18.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.Top
     ) {
-        GlyphBadge(glyph = "✉", accentColor = scheme.primary)
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             val title = when {
                 rule.name.isNotBlank() -> rule.name
@@ -3942,33 +4001,40 @@ fun NotificationRuleRow(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     if (rule.actionUserTask.isNotBlank() && rule.actionUserTask != title) {
                         Text(
                             text = rule.actionUserTask,
-                            fontSize = 11.sp,
-                            color = scheme.onSurface.copy(alpha = 0.72f)
+                            fontSize = 10.sp,
+                            color = scheme.onSurface.copy(alpha = 0.72f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
-                StatusTag(
-                    text = if (rule.enabled) tr("Enabled") else tr("Paused"),
-                    accentColor = if (rule.enabled) AppSuccess else scheme.onSurface.copy(alpha = 0.55f)
+                Switch(
+                    checked = rule.enabled,
+                    onCheckedChange = onToggleEnabled,
+                    colors = listToggleColors
                 )
             }
             Text(
                 text = "${tr("Listening app")}: ${rule.packageList.joinToString(", ").ifBlank { tr("(not set)") }}",
-                fontSize = 11.sp,
-                color = scheme.onSurface.copy(alpha = 0.75f)
+                fontSize = 10.sp,
+                color = scheme.onSurface.copy(alpha = 0.72f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             val timeWindow = if (rule.activeTimeStart.isNotBlank() && rule.activeTimeEnd.isNotBlank()) {
                 "${rule.activeTimeStart}-${rule.activeTimeEnd}"
@@ -3977,45 +4043,31 @@ fun NotificationRuleRow(
             }
             Text(
                 text = "${tr("Match")}: ${rule.titlePattern.ifBlank { "-" }} / ${rule.bodyPattern.ifBlank { "-" }}",
-                fontSize = 11.sp,
-                color = scheme.onSurface.copy(alpha = 0.75f)
-            )
-            Text(
-                text = "${tr("Trigger interval")}: ${rule.cooldownMs / 1000}s  •  ${tr("Time window")}: $timeWindow",
-                fontSize = 11.sp,
-                color = scheme.onSurface.copy(alpha = 0.75f)
-            )
-            Text(
-                text = "${tr("Record")}: ${if (rule.actionRecordEnabled) tr("On") else tr("Off")}  •  LLM: ${if (rule.llmConditionEnabled) tr("On") else tr("Off")}",
-                fontSize = 11.sp,
-                color = scheme.onSurface.copy(alpha = 0.75f)
+                fontSize = 10.sp,
+                color = scheme.onSurface.copy(alpha = 0.72f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val meta = "${tr("Trigger interval")}: ${rule.cooldownMs / 1000}s  •  ${tr("Time window")}: $timeWindow  •  ${tr("Record")}: ${if (rule.actionRecordEnabled) tr("On") else tr("Off")}  •  LLM: ${if (rule.llmConditionEnabled) tr("On") else tr("Off")}"
                 Text(
-                    text = "${tr("ID")}=${rule.id.take(8)}...",
+                    text = meta,
+                    modifier = Modifier.weight(1f),
                     fontSize = 10.sp,
-                    color = scheme.onSurface.copy(alpha = 0.6f)
+                    color = scheme.onSurface.copy(alpha = 0.66f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                TextButton(
+                    onClick = onDelete,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    modifier = Modifier.height(26.dp)
                 ) {
-                    Switch(
-                        checked = rule.enabled,
-                        onCheckedChange = onToggleEnabled,
-                        colors = listToggleColors
-                    )
-                    OutlinedButton(
-                        onClick = onDelete,
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(30.dp)
-                    ) {
-                        Text(tr("Delete"), fontSize = 11.sp, color = scheme.error)
-                    }
+                    Text(tr("Delete"), fontSize = 10.sp, color = scheme.error)
                 }
             }
         }
@@ -4367,6 +4419,14 @@ private fun formatPackageDisplay(packageName: String, options: List<AppPackageOp
         "$label ($packageName)"
     } else {
         packageName
+    }
+}
+
+@Composable
+private fun formatTaskRouteMode(modeRaw: String): String {
+    return when (modeRaw.trim().lowercase(Locale.getDefault())) {
+        MainViewModel.TASK_MAP_MODE_MANUAL, MainViewModel.TASK_MAP_MODE_AI -> tr("On")
+        else -> tr("Off")
     }
 }
 

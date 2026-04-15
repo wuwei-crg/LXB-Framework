@@ -61,4 +61,5 @@ public final class CommandIds {
     public static final byte CMD_CORTEX_SCHEDULE_REMOVE = 0x7C; // remove schedule by id
     public static final byte CMD_CORTEX_SCHEDULE_UPDATE = 0x7D; // update schedule by id
     public static final byte CMD_CORTEX_NOTIFY = 0x7E;          // notification trigger module control
+    public static final byte CMD_CORTEX_TASK_MAP = 0x7F;        // task-local learned map control
 }

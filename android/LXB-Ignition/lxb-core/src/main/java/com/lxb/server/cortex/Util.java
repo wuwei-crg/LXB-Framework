@@ -3,6 +3,41 @@ package com.lxb.server.cortex;
 public final class Util {
     private Util() {}
 
+    public static boolean isInformativeResourceId(String rid) {
+        String s = normalizeResourceId(rid).toLowerCase();
+        if (s.isEmpty()) return false;
+        if ("container".equals(s)
+                || "content".equals(s)
+                || "layout".equals(s)
+                || "root".equals(s)
+                || "item".equals(s)
+                || "view".equals(s)
+                || "unknown".equals(s)) {
+            return false;
+        }
+        if (s.length() <= 3) return false;
+        boolean allDigits = true;
+        for (int i = 0; i < s.length(); i++) {
+            if (!Character.isDigit(s.charAt(i))) {
+                allDigits = false;
+                break;
+            }
+        }
+        if (allDigits) return false;
+
+        boolean hexOnly = s.length() >= 8;
+        for (int i = 0; i < s.length() && hexOnly; i++) {
+            char ch = s.charAt(i);
+            boolean isHex = (ch >= '0' && ch <= '9')
+                    || (ch >= 'a' && ch <= 'f')
+                    || (ch >= 'A' && ch <= 'F');
+            if (!isHex) {
+                hexOnly = false;
+            }
+        }
+        return !hexOnly;
+    }
+
     public static String normalizeResourceId(String rid) {
         if (rid == null) return "";
         String s = rid.trim();
@@ -39,4 +74,3 @@ public final class Util {
         return t;
     }
 }
-

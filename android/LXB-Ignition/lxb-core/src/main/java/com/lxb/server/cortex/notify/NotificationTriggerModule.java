@@ -423,7 +423,10 @@ public class NotificationTriggerModule {
                         rule.action.packageName,
                         userPlaybook,
                         Boolean.valueOf(rule.action.recordEnabled),
-                        rule.action.useMapOverride
+                        rule.action.useMapOverride,
+                        rule.action.taskMapMode,
+                        rule.id,
+                        buildRuleConfigHash(rule)
                 );
                 ruleLastTriggeredMs.put(rule.id, now);
                 clearRuleFailure(rule.id);
@@ -890,8 +893,28 @@ public class NotificationTriggerModule {
         if (r.action.useMapOverride != null) {
             action.put("use_map", r.action.useMapOverride.booleanValue());
         }
+        action.put("task_map_mode", r.action.taskMapMode);
         m.put("action", action);
         return m;
+    }
+
+    private String buildRuleConfigHash(NotificationTriggerRule r) {
+        if (r == null) return "";
+        StringBuilder sb = new StringBuilder();
+        sb.append("package_mode=").append(stringOrEmpty(r.packageMode)).append('\n');
+        sb.append("package_list=").append(String.valueOf(r.packageList)).append('\n');
+        sb.append("text_mode=").append(stringOrEmpty(r.textMode)).append('\n');
+        sb.append("title_pattern=").append(stringOrEmpty(r.titlePattern)).append('\n');
+        sb.append("body_pattern=").append(stringOrEmpty(r.bodyPattern)).append('\n');
+        sb.append("llm_condition_enabled=").append(r.llmConditionEnabled).append('\n');
+        sb.append("llm_condition=").append(stringOrEmpty(r.llmCondition)).append('\n');
+        sb.append("action_user_task=").append(stringOrEmpty(r.action.userTask)).append('\n');
+        sb.append("action_package=").append(stringOrEmpty(r.action.packageName)).append('\n');
+        sb.append("action_user_playbook=").append(stringOrEmpty(r.action.userPlaybook)).append('\n');
+        sb.append("action_record_enabled=").append(r.action.recordEnabled).append('\n');
+        sb.append("action_use_map=").append(r.action.useMapOverride != null ? r.action.useMapOverride.booleanValue() : true).append('\n');
+        sb.append("action_task_map_mode=").append(stringOrEmpty(r.action.taskMapMode)).append('\n');
+        return com.lxb.server.cortex.taskmap.TaskRouteKey.sha256Hex(sb.toString());
     }
 
     private Map<String, Object> errOut(String err) {

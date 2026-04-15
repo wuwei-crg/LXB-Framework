@@ -7,6 +7,7 @@ data class ScheduleFormInput(
     val playbook: String,
     val enabled: Boolean,
     val recordEnabled: Boolean,
+    val taskMapMode: String,
     val runAtRaw: String,
     val repeatModeRaw: String,
     val repeatWeekdays: Int
@@ -19,6 +20,7 @@ data class ScheduleDraft(
     val playbook: String,
     val enabled: Boolean,
     val recordEnabled: Boolean,
+    val taskMapMode: String,
     val runAt: Long,
     val repeatMode: String,
     val repeatWeekdays: Int
@@ -57,6 +59,7 @@ object ScheduleUseCase {
             playbook = input.playbook.trim(),
             enabled = input.enabled,
             recordEnabled = input.recordEnabled,
+            taskMapMode = input.taskMapMode.trim().ifEmpty { "off" },
             runAt = runAt,
             repeatMode = repeatMode,
             repeatWeekdays = repeatWeekdays
@@ -82,6 +85,7 @@ object ScheduleUseCase {
             .put("user_playbook", draft.playbook)
             .put("enabled", draft.enabled)
             .put("record_enabled", draft.recordEnabled)
+            .put("task_map_mode", draft.taskMapMode)
         if (!scheduleId.isNullOrBlank()) {
             payload.put("schedule_id", scheduleId)
         }

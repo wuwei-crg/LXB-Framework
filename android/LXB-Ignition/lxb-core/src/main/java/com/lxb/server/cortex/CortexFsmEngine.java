@@ -3,6 +3,14 @@ package com.lxb.server.cortex;
 import com.lxb.server.cortex.json.Json;
 import com.lxb.server.cortex.dump.DumpActionsParser;
 import com.lxb.server.cortex.fsm.VisionCommandParser;
+import com.lxb.server.cortex.taskmap.TaskMap;
+import com.lxb.server.cortex.taskmap.TaskMapAssembler;
+import com.lxb.server.cortex.taskmap.TaskMapStore;
+import com.lxb.server.cortex.taskmap.TaskMapSubTaskRestorer;
+import com.lxb.server.cortex.taskmap.TaskRouteKey;
+import com.lxb.server.cortex.taskmap.TaskRouteRecord;
+import com.lxb.server.cortex.taskmap.TaskRouteRecorder;
+import com.lxb.server.cortex.taskmap.RuntimeLocatorBuilder;
 import com.lxb.server.execution.ExecutionEngine;
 import com.lxb.server.perception.PerceptionEngine;
 
@@ -18,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.Collections;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -37,6 +46,7 @@ public class CortexFsmEngine {
     public enum State {
         INIT,
         TASK_DECOMPOSE,
+        TASK_MAP_ROOT_LOOKUP,
         APP_RESOLVE,
         ROUTE_PLAN,
         PREPARE_DEVICE,
@@ -107,11 +117,13 @@ public class CortexFsmEngine {
         public final List<SubTask> subTasks = new ArrayList<>();
         public String taskType = "";
         public final Map<String, Object> blackboard = new LinkedHashMap<>();
+        public final Map<String, Object> taskMapBlackboard = new LinkedHashMap<>();
 
         // Current sub_task runtime context
         public SubTask currentSubTask = null;
         public int currentSubTaskIndex = -1;
         public boolean currentSubTaskIsLast = false;
+        public TaskMap.Segment currentTaskMapSegment = null;
 
         // External semantic history (maintained by host, not by model memory).
         // Each row contains:
@@ -136,6 +148,20 @@ public class CortexFsmEngine {
         public boolean unlockedByFsm = false;
         public UnlockReadyCallback unlockReadyCallback = null;
         public boolean unlockReadyNotified = false;
+        public String source = "manual";
+        public String sourceId = "";
+        public String sourceConfigHash = "";
+        public String taskMapMode = "off";
+        public String taskRouteKeyHash = "";
+        public TaskRouteKey taskRouteKey = null;
+        public TaskRouteRecorder taskRouteRecorder = new TaskRouteRecorder();
+        public TaskRouteRecord latestAttemptRecord = null;
+        public TaskRouteRecord latestSuccessRecord = null;
+        public TaskMap taskMap = null;
+        public boolean taskMapRootHit = false;
+        public String taskMapReplayFallbackReason = "";
+        public boolean taskMapReplayUsed = false;
+        public boolean taskRouteRecordStarted = false;
 
         public Context(String taskId) {
             this.taskId = taskId;
@@ -148,6 +174,7 @@ public class CortexFsmEngine {
     private final LlmClient llmClient;
     private final MapManager mapManager;
     private final MapPromptPlanner mapPlanner;
+    private final TaskMapStore taskMapStore;
     private static final int LAUNCH_RETRY_MAX = 3;
     private static final long LAUNCH_WAIT_TIMEOUT_MS = 8000L;
     private static final long LAUNCH_WAIT_SAMPLE_MS = 350L;
@@ -198,13 +225,15 @@ public class CortexFsmEngine {
     public CortexFsmEngine(PerceptionEngine perception,
                            ExecutionEngine execution,
                            MapManager mapManager,
-                           TraceLogger trace) {
+                           TraceLogger trace,
+                           TaskMapStore taskMapStore) {
         this.perception = perception;
         this.execution = execution;
         this.trace = trace;
         this.llmClient = new LlmClient();
         this.mapManager = mapManager;
         this.mapPlanner = new MapPromptPlanner(llmClient);
+        this.taskMapStore = taskMapStore != null ? taskMapStore : new TaskMapStore();
     }
 
     /**
@@ -335,7 +364,11 @@ public class CortexFsmEngine {
                 useMapOverride,
                 taskIdOverride,
                 cancellationChecker,
-                null
+                null,
+                "manual",
+                "",
+                "",
+                "off"
         );
     }
 
@@ -351,7 +384,11 @@ public class CortexFsmEngine {
             Boolean useMapOverride,
             String taskIdOverride,
             CancellationChecker cancellationChecker,
-            UnlockReadyCallback unlockReadyCallback
+            UnlockReadyCallback unlockReadyCallback,
+            String source,
+            String sourceId,
+            String sourceConfigHash,
+            String taskMapMode
     ) {
         String effectiveTaskId = (taskIdOverride != null && !taskIdOverride.isEmpty())
                 ? taskIdOverride
@@ -364,6 +401,13 @@ public class CortexFsmEngine {
         ctx.userPlaybook = userPlaybook != null ? userPlaybook.trim() : "";
         ctx.unlockReadyCallback = unlockReadyCallback;
         ctx.unlockReadyNotified = false;
+        ctx.source = source != null ? source.trim() : "manual";
+        ctx.sourceId = sourceId != null ? sourceId.trim() : "";
+        ctx.sourceConfigHash = sourceConfigHash != null ? sourceConfigHash.trim() : "";
+        ctx.taskMapMode = taskMapMode != null ? taskMapMode.trim().toLowerCase(Locale.ROOT) : "off";
+        if (ctx.taskMapMode.isEmpty()) {
+            ctx.taskMapMode = "off";
+        }
         if (ctx.userPlaybook.isEmpty() && taskMemoryHint != null && !taskMemoryHint.isEmpty()) {
             ctx.taskMemoryHint.putAll(taskMemoryHint);
         }
@@ -371,6 +415,33 @@ public class CortexFsmEngine {
         String initialPackageName = packageName != null ? packageName : "";
         ctx.selectedPackage = initialPackageName;
         loadUnlockPolicyFromConfig(ctx);
+        ctx.taskRouteKey = TaskRouteKey.build(
+                ctx.source,
+                ctx.sourceId,
+                ctx.sourceConfigHash,
+                initialPackageName,
+                ctx.rootUserTask,
+                ctx.userPlaybook,
+                ctx.taskMapMode
+        );
+        String canonicalTaskKeyHash = ctx.taskRouteKey.taskKeyHash;
+        String resolvedExistingTaskKey = taskMapStore != null
+                ? taskMapStore.resolveExistingKeyHash(ctx.taskRouteKey, ctx.rootUserTask)
+                : "";
+        if (resolvedExistingTaskKey != null && !resolvedExistingTaskKey.isEmpty()
+                && !resolvedExistingTaskKey.equals(canonicalTaskKeyHash)) {
+            ctx.taskRouteKey = TaskRouteKey.alias(ctx.taskRouteKey, resolvedExistingTaskKey);
+            Map<String, Object> aliasEv = new LinkedHashMap<>();
+            aliasEv.put("task_id", ctx.taskId);
+            aliasEv.put("canonical_task_key_hash", canonicalTaskKeyHash);
+            aliasEv.put("resolved_task_key_hash", resolvedExistingTaskKey);
+            trace.event("task_route_key_compat_hit", aliasEv);
+        }
+        ctx.taskRouteKeyHash = ctx.taskRouteKey.taskKeyHash;
+        Map<String, Object> keyEv = new LinkedHashMap<>();
+        keyEv.put("task_id", ctx.taskId);
+        keyEv.putAll(ctx.taskRouteKey.asMap());
+        trace.event("task_route_key", keyEv);
         if (useMapOverride != null) {
             ctx.useMap = useMapOverride.booleanValue();
             Map<String, Object> useMapEv = new LinkedHashMap<>();
@@ -390,7 +461,7 @@ public class CortexFsmEngine {
         }
 
         try {
-            // 1) INIT + TASK_DECOMPOSE (single pass)
+            // 1) INIT + task-map lookup + TASK_DECOMPOSE (single pass)
             State state = State.INIT;
             for (int i = 0; i < 30; i++) {
                 if (cancellationChecker != null && cancellationChecker.isCancelled()) {
@@ -404,6 +475,10 @@ public class CortexFsmEngine {
                 if (state == State.INIT) {
                     state = runInitState(ctx);
                     notifyUnlockReadyIfNeeded(ctx, "after_init");
+                    continue;
+                }
+                if (state == State.TASK_MAP_ROOT_LOOKUP) {
+                    state = runTaskMapRootLookupState(ctx);
                     continue;
                 }
                 if (state == State.TASK_DECOMPOSE) {
@@ -450,6 +525,9 @@ public class CortexFsmEngine {
                 ctx.currentSubTask = st;
                 ctx.currentSubTaskIndex = idx;
                 ctx.currentSubTaskIsLast = (idx == effectiveSubTasks.size() - 1);
+                ctx.currentTaskMapSegment = (ctx.taskMap != null && idx >= 0 && idx < ctx.taskMap.segments.size())
+                        ? ctx.taskMap.segments.get(idx)
+                        : null;
                 ctx.visionHistory.clear();
                 ctx.pendingHistoryInstruction = "";
                 ctx.pendingHistoryExpected = "";
@@ -458,9 +536,11 @@ public class CortexFsmEngine {
 
                 // Select package:
                 // - caller-provided package has highest priority.
-                // - sub_task appHint is intentionally NOT used for execution routing.
-                //   APP_RESOLVE remains the single source of truth for package selection.
-                if (!initialPackageName.isEmpty()) {
+                // - root task-map hit can restore a fixed package and skip APP_RESOLVE.
+                if (ctx.currentTaskMapSegment != null && !ctx.currentTaskMapSegment.packageName.isEmpty()) {
+                    ctx.selectedPackage = ctx.currentTaskMapSegment.packageName;
+                    ctx.selectedPackageLabel = ctx.currentTaskMapSegment.packageLabel != null ? ctx.currentTaskMapSegment.packageLabel : "";
+                } else if (!initialPackageName.isEmpty()) {
                     ctx.selectedPackage = initialPackageName;
                 } else {
                     ctx.selectedPackage = "";
@@ -481,8 +561,10 @@ public class CortexFsmEngine {
                 trace.event("fsm_sub_task_begin", subBegin);
 
                 // Memory fast path is intentionally disabled for now.
-                // Always use the full pipeline to keep execution deterministic.
-                state = State.APP_RESOLVE;
+                // Root-map hits skip decomposition and app resolution.
+                state = (ctx.currentTaskMapSegment != null && !ctx.currentTaskMapSegment.packageName.isEmpty())
+                        ? State.PREPARE_DEVICE
+                        : State.APP_RESOLVE;
                 int subTaskStepLimit = Math.max(40, resolveVisionMaxTurns(ctx) + 20);
                 for (int step = 0; step < subTaskStepLimit; step++) {
                     notifyUnlockReadyIfNeeded(ctx, "sub_task_loop");
@@ -545,8 +627,9 @@ public class CortexFsmEngine {
                 subEnd.put("status", state == State.FINISH ? "success" : "failed");
                 trace.event("fsm_sub_task_end", subEnd);
 
-                // After a successful sub_task, best-effort reset: go HOME and stop the app.
-                if (state == State.FINISH) {
+                // For learned task-map segments, keep current in-app context between segments.
+                // For normal decomposed subtasks, preserve the old clean-reset behavior.
+                if (state == State.FINISH && !(ctx.taskMapRootHit && idx < effectiveSubTasks.size() - 1)) {
                     safeResetToHomeAndStopApp(ctx);
                 }
 
@@ -563,7 +646,9 @@ public class CortexFsmEngine {
             ctx.currentSubTask = null;
             ctx.currentSubTaskIndex = -1;
             ctx.currentSubTaskIsLast = false;
+            ctx.currentTaskMapSegment = null;
             tryAutoLockAfterTask(ctx, finalState);
+            finalizeTaskMapRecording(ctx, finalState);
 
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("status", finalState == State.FINISH ? "success" : "failed");
@@ -586,6 +671,11 @@ public class CortexFsmEngine {
             out.put("use_map", ctx.useMap);
             out.put("map_source", ctx.mapSource);
             out.put("unlocked_by_fsm", ctx.unlockedByFsm);
+            out.put("task_map_mode", ctx.taskMapMode);
+            out.put("task_key_hash", ctx.taskRouteKeyHash);
+            out.put("task_map_root_hit", ctx.taskMapRootHit);
+            out.put("task_map_replay_used", ctx.taskMapReplayUsed);
+            out.put("task_map_replay_fallback_reason", ctx.taskMapReplayFallbackReason);
             if (ctx.error != null && !ctx.error.isEmpty()) {
                 out.put("reason", ctx.error);
             }
@@ -597,6 +687,280 @@ public class CortexFsmEngine {
             if (enablePush) {
                 trace.clearPushTarget(ctx.taskId);
             }
+        }
+    }
+
+    private void finalizeTaskMapRecording(Context ctx, State finalState) {
+        if (ctx == null || ctx.taskRouteRecorder == null || ctx.taskRouteKeyHash == null || ctx.taskRouteKeyHash.isEmpty()) {
+            return;
+        }
+        try {
+            String status = finalState == State.FINISH ? "success" : "failed";
+            TaskRouteRecord record = ctx.taskRouteRecorder.finish(status, finalState.name(), ctx.error);
+            record.packageName = ctx.selectedPackage != null ? ctx.selectedPackage : record.packageName;
+            record.packageLabel = ctx.selectedPackageLabel != null ? ctx.selectedPackageLabel : record.packageLabel;
+            if (record.actions.isEmpty()) {
+                Map<String, Object> skip = new LinkedHashMap<>();
+                skip.put("task_id", ctx.taskId);
+                skip.put("task_key_hash", ctx.taskRouteKeyHash);
+                skip.put("reason", "empty_record");
+                trace.event("task_map_generation_skipped", skip);
+                return;
+            }
+
+            ctx.latestAttemptRecord = record;
+            taskMapStore.saveLatestAttemptRecord(record);
+            Map<String, Object> saved = new LinkedHashMap<>();
+            saved.put("task_id", ctx.taskId);
+            saved.put("task_key_hash", ctx.taskRouteKeyHash);
+            saved.put("status", status);
+            saved.put("action_count", record.actions.size());
+            saved.put("kind", "latest_attempt_record");
+            trace.event("task_route_record_saved", saved);
+
+            if (finalState != State.FINISH) {
+                Map<String, Object> skip = new LinkedHashMap<>();
+                skip.put("task_id", ctx.taskId);
+                skip.put("task_key_hash", ctx.taskRouteKeyHash);
+                skip.put("reason", "task_failed");
+                trace.event("task_map_generation_skipped", skip);
+                return;
+            }
+
+            ctx.latestSuccessRecord = record;
+            taskMapStore.saveLatestSuccessRecord(record);
+            Map<String, Object> successSaved = new LinkedHashMap<>(saved);
+            successSaved.put("kind", "latest_success_record");
+            trace.event("task_route_record_saved", successSaved);
+
+            if ("off".equals(ctx.taskMapMode)) {
+                traceTaskMapGenerationSkipped(ctx, "mode_off");
+                return;
+            }
+            if ("manual".equals(ctx.taskMapMode)) {
+                traceTaskMapGenerationSkipped(ctx, "manual_mode");
+                return;
+            }
+            if (taskMapStore.hasMap(ctx.taskRouteKeyHash)) {
+                traceTaskMapGenerationSkipped(ctx, "map_exists");
+                return;
+            }
+
+            Set<String> deleteIds = pruneTaskRouteRecord(ctx, record);
+            TaskMap assembled = TaskMapAssembler.assemble(record, deleteIds, "ai");
+            if (assembled == null || assembled.stepCount() <= 0) {
+                traceTaskMapGenerationSkipped(ctx, "assemble_empty");
+                return;
+            }
+            taskMapStore.saveMap(assembled);
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("task_id", ctx.taskId);
+            ev.put("task_key_hash", ctx.taskRouteKeyHash);
+            ev.put("segment_count", assembled.segments.size());
+            ev.put("step_count", assembled.stepCount());
+            trace.event("task_map_saved", ev);
+        } catch (Exception e) {
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("task_id", ctx.taskId);
+            ev.put("task_key_hash", ctx.taskRouteKeyHash);
+            ev.put("err", String.valueOf(e));
+            trace.event("task_map_finalize_error", ev);
+        }
+    }
+
+    private void traceTaskMapGenerationSkipped(Context ctx, String reason) {
+        Map<String, Object> skip = new LinkedHashMap<>();
+        skip.put("task_id", ctx.taskId);
+        skip.put("task_key_hash", ctx.taskRouteKeyHash);
+        skip.put("reason", reason);
+        trace.event("task_map_generation_skipped", skip);
+    }
+
+    private Set<String> pruneTaskRouteRecord(Context ctx, TaskRouteRecord record) {
+        if (record == null || record.actions.isEmpty()) {
+            return Collections.emptySet();
+        }
+        try {
+            String prompt = buildTaskMapPrunePrompt(record);
+            Map<String, Object> promptEv = new LinkedHashMap<>();
+            promptEv.put("task_id", ctx.taskId);
+            promptEv.put("task_key_hash", ctx.taskRouteKeyHash);
+            promptEv.put("prompt", prompt);
+            trace.event("task_map_prune_prompt", promptEv);
+
+            LlmConfig cfg = LlmConfig.loadDefault();
+            String raw = llmClient.chatOnce(cfg, null, prompt, null, 10000, 60000);
+            Map<String, Object> respEv = new LinkedHashMap<>();
+            respEv.put("task_id", ctx.taskId);
+            respEv.put("task_key_hash", ctx.taskRouteKeyHash);
+            respEv.put("response", raw != null && raw.length() > 2000 ? raw.substring(0, 2000) + "..." : raw);
+            trace.event("task_map_prune_response", respEv);
+            return parseDeleteIds(raw);
+        } catch (Exception e) {
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("task_id", ctx.taskId);
+            ev.put("task_key_hash", ctx.taskRouteKeyHash);
+            ev.put("err", String.valueOf(e));
+            trace.event("task_map_prune_parse_error", ev);
+            return Collections.emptySet();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Set<String> parseDeleteIds(String raw) {
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        if (raw == null || raw.trim().isEmpty()) {
+            return out;
+        }
+        try {
+            Object obj = Json.parse(raw);
+            if (!(obj instanceof Map)) {
+                return out;
+            }
+            Object deleteObj = ((Map<String, Object>) obj).get("delete");
+            if (deleteObj instanceof List) {
+                for (Object item : (List<Object>) deleteObj) {
+                    if (item instanceof Map) {
+                        String id = stringOrEmpty(((Map<String, Object>) item).get("action_id"));
+                        if (!id.isEmpty()) out.add(id);
+                    } else {
+                        String id = stringOrEmpty(item);
+                        if (!id.isEmpty()) out.add(id);
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    private String buildTaskMapPrunePrompt(TaskRouteRecord record) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Review the successful mobile task route record.\n");
+        sb.append("Return JSON only. Output shape must be either {\"delete\":[\"a0001\"]} or {\"delete\":[{\"action_id\":\"a0001\",\"reason\":\"...\"}]}\n");
+        sb.append("Delete only actions that are popup handling, failed retries, no-effect retries, or non-essential detours.\n");
+        sb.append("Do not return any final map json. Keep navigation actions that help reach the target page.\n\n");
+        sb.append("Root task: ").append(record.rootTask).append("\n");
+        sb.append("Package: ").append(record.packageName).append("\n");
+        sb.append("Actions:\n");
+        for (TaskRouteRecord.Action action : record.actions) {
+            sb.append("- ").append(action.actionId)
+                    .append(" | op=").append(action.op)
+                    .append(" | raw=").append(action.rawCommand)
+                    .append(" | observe=").append(action.createdPageSemantics)
+                    .append(" | expected=").append(action.vision != null ? stringOrEmpty(action.vision.get("expected")) : "")
+                    .append(" | exec=").append(action.execResult)
+                    .append("\n");
+        }
+        return sb.toString();
+    }
+
+    private TaskRouteRecord.Action buildTaskRouteAction(Context ctx, Instruction cmd, Map<String, Object> structured) {
+        if (ctx == null || cmd == null || ctx.taskRouteRecorder == null) {
+            return null;
+        }
+        TaskRouteRecord.Action action = ctx.taskRouteRecorder.newAction(
+                ctx.taskRouteRecorder.nextActionId(),
+                ctx.currentSubTask != null ? ctx.currentSubTask.id : "default",
+                ctx.visionTurns,
+                cmd.op,
+                cmd.raw
+        );
+        action.args.addAll(cmd.args);
+        populateTaskRouteActionLocator(ctx, cmd, action);
+        action.createdPageSemantics = structured != null ? stringOrEmpty(structured.get("Ovserve_result")) : "";
+        ctx.taskRouteRecorder.recordVisionSnapshot(action, structured);
+        if ("INPUT".equals(cmd.op) && !action.args.isEmpty()) {
+            action.args.clear();
+            action.args.add("[redacted]");
+        }
+        return action;
+    }
+
+    private void traceTaskRouteRecordAction(Context ctx, TaskRouteRecord.Action action) {
+        if (ctx == null || action == null) {
+            return;
+        }
+        Map<String, Object> ev = new LinkedHashMap<>();
+        ev.put("task_id", ctx.taskId);
+        ev.put("task_key_hash", ctx.taskRouteKeyHash);
+        ev.put("action_id", action.actionId);
+        ev.put("sub_task_id", action.subTaskId);
+        ev.put("turn", action.turn);
+        ev.put("op", action.op);
+        ev.put("args", new ArrayList<String>(action.args));
+        ev.put("exec_result", action.execResult);
+        ev.put("exec_error", action.execError);
+        trace.event("task_route_record_action", ev);
+    }
+
+    private void populateTaskRouteActionLocator(Context ctx, Instruction cmd, TaskRouteRecord.Action action) {
+        if (ctx == null || cmd == null || action == null) {
+            return;
+        }
+        try {
+            List<DumpActionsParser.ActionNode> nodes = captureDumpActionNodes();
+            if ("TAP".equals(cmd.op) && cmd.args.size() >= 2) {
+                double xf = Double.parseDouble(cmd.args.get(0));
+                double yf = Double.parseDouble(cmd.args.get(1));
+                int[] mapped = mapPointByProbe(ctx, xf, yf);
+                action.tapPoint.clear();
+                action.tapPoint.add(mapped[0]);
+                action.tapPoint.add(mapped[1]);
+                Map<String, Object> locator = RuntimeLocatorBuilder.buildLocator(mapped[0], mapped[1], nodes);
+                if (isUniqueTaskMapLocator(locator)) {
+                    action.locator.putAll(locator);
+                } else {
+                    action.locator.clear();
+                    action.containerProbe.putAll(RuntimeLocatorBuilder.buildContainerProbe(mapped[0], mapped[1], nodes));
+                }
+                return;
+            }
+            if ("SWIPE".equals(cmd.op) && cmd.args.size() >= 4) {
+                double x1f = Double.parseDouble(cmd.args.get(0));
+                double y1f = Double.parseDouble(cmd.args.get(1));
+                double x2f = Double.parseDouble(cmd.args.get(2));
+                double y2f = Double.parseDouble(cmd.args.get(3));
+                int[] p1 = mapPointByProbe(ctx, x1f, y1f);
+                int[] p2 = mapPointByProbe(ctx, x2f, y2f);
+                int duration = 600;
+                if (cmd.args.size() >= 5) {
+                    duration = Math.max(200, parseIntLike(cmd.args.get(4), 600));
+                }
+                action.swipe.clear();
+                action.swipe.put("start", java.util.Arrays.asList(p1[0], p1[1]));
+                action.swipe.put("end", java.util.Arrays.asList(p2[0], p2[1]));
+                action.swipe.put("duration_ms", duration);
+            }
+        } catch (Exception ignored) {
+            action.locator.clear();
+            action.containerProbe.clear();
+            action.tapPoint.clear();
+            action.swipe.clear();
+        }
+    }
+
+    private boolean isUniqueTaskMapLocator(Map<String, Object> locator) {
+        if (locator == null || locator.isEmpty()) {
+            return false;
+        }
+        Object countObj = locator.get("locator_count");
+        if (countObj != null) {
+            Integer count = toIntObject(countObj);
+            return count != null && count.intValue() >= 1 && count.intValue() <= 3;
+        }
+        return locator.containsKey("resource_id")
+                || locator.containsKey("text")
+                || locator.containsKey("content_desc")
+                || locator.containsKey("class");
+    }
+
+    private List<DumpActionsParser.ActionNode> captureDumpActionNodes() {
+        try {
+            byte[] payload = perception != null ? perception.handleDumpActions(new byte[0]) : null;
+            return DumpActionsParser.parse(payload);
+        } catch (Exception ignored) {
+            return new ArrayList<DumpActionsParser.ActionNode>();
         }
     }
 
@@ -719,9 +1083,51 @@ public class CortexFsmEngine {
                 : new LinkedHashMap<>(ctx.textInputSupport));
         trace.event("fsm_init_ready", readyEv);
 
-        // Next: task decomposition (v2). Even if decomposition fails, the FSM will
-        // fall back to the old single-task pipeline.
-        return State.TASK_DECOMPOSE;
+        // Next: attempt task-map lookup before task decomposition.
+        return State.TASK_MAP_ROOT_LOOKUP;
+    }
+
+    private State runTaskMapRootLookupState(Context ctx) {
+        Map<String, Object> ev = new LinkedHashMap<>();
+        ev.put("task_id", ctx.taskId);
+        ev.put("state", State.TASK_MAP_ROOT_LOOKUP.name());
+        ev.put("task_key_hash", ctx.taskRouteKeyHash);
+        ev.put("task_map_mode", ctx.taskMapMode);
+        trace.event("task_map_root_lookup", ev);
+
+        if (ctx.taskRouteKeyHash == null || ctx.taskRouteKeyHash.isEmpty() || "off".equals(ctx.taskMapMode)) {
+            ctx.taskMapRootHit = false;
+            return State.TASK_DECOMPOSE;
+        }
+
+        TaskMap map = taskMapStore != null ? taskMapStore.loadMap(ctx.taskRouteKeyHash) : null;
+        if (map == null || !map.isUsable()) {
+            ctx.taskMapRootHit = false;
+            Map<String, Object> miss = new LinkedHashMap<>();
+            miss.put("task_id", ctx.taskId);
+            miss.put("task_key_hash", ctx.taskRouteKeyHash);
+            miss.put("reason", map == null ? "map_missing" : "map_unusable");
+            trace.event("task_map_root_lookup_miss", miss);
+            return State.TASK_DECOMPOSE;
+        }
+
+        ctx.taskMapRootHit = true;
+        ctx.taskMap = map;
+        ctx.subTasks.clear();
+        ctx.subTasks.addAll(TaskMapSubTaskRestorer.restore(map));
+        ctx.taskMapBlackboard.clear();
+        ctx.taskMapBlackboard.put("task_key_hash", ctx.taskRouteKeyHash);
+        ctx.taskMapBlackboard.put("segment_count", map.segments.size());
+        ctx.taskMapBlackboard.put("step_count", map.stepCount());
+
+        Map<String, Object> hit = new LinkedHashMap<>();
+        hit.put("task_id", ctx.taskId);
+        hit.put("task_key_hash", ctx.taskRouteKeyHash);
+        hit.put("segment_count", map.segments.size());
+        hit.put("step_count", map.stepCount());
+        trace.event("task_map_root_lookup_hit", hit);
+        trace.event("task_map_subtasks_restored", hit);
+        return State.PREPARE_DEVICE;
     }
 
     /**
@@ -1494,6 +1900,25 @@ public class CortexFsmEngine {
         }
 
         String pkg = ctx.selectedPackage.trim();
+        if (shouldSkipPrepareLaunchForTaskMap(ctx, pkg)) {
+            Map<String, Object> skip = new LinkedHashMap<>();
+            skip.put("task_id", ctx.taskId);
+            skip.put("package", pkg);
+            skip.put("segment_id", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+            skip.put("result", "already_ready");
+            skip.put("foreground_package", getCurrentActivityInfoForRouting().packageName);
+            skip.put("screen_state", getScreenStateCode());
+            skip.put("lock_hint", isLikelyLockscreenShown());
+            trace.event("fsm_prepare_device_skipped", skip);
+
+            Map<String, Object> done = new LinkedHashMap<>();
+            done.put("task_id", ctx.taskId);
+            done.put("package", pkg);
+            done.put("result", "skipped_ready");
+            trace.event("fsm_prepare_device_done", done);
+            return State.ROUTING;
+        }
+
         boolean launchOk = launchAppForRouting(ctx, pkg);
 
         // Keep original event name for compatibility with existing traces/UI parsers.
@@ -1536,6 +1961,20 @@ public class CortexFsmEngine {
         return State.ROUTING;
     }
 
+    private boolean shouldSkipPrepareLaunchForTaskMap(Context ctx, String pkg) {
+        if (ctx == null || pkg == null || pkg.trim().isEmpty()) {
+            return false;
+        }
+        if (!ctx.taskMapRootHit || ctx.currentTaskMapSegment == null) {
+            return false;
+        }
+        if (getScreenStateCode() != 1 || isLikelyLockscreenShown()) {
+            return false;
+        }
+        ActivityInfo current = getCurrentActivityInfoForRouting();
+        return pkg.equals(current.packageName);
+    }
+
     private State runRoutingState(Context ctx) {
         Map<String, Object> ev = new LinkedHashMap<>();
         ev.put("task_id", ctx.taskId);
@@ -1555,6 +1994,26 @@ public class CortexFsmEngine {
         }
 
         String pkg = ctx.selectedPackage.trim();
+        boolean hasTaskMapSegment = ctx.currentTaskMapSegment != null
+                && ctx.currentTaskMapSegment.steps != null
+                && !ctx.currentTaskMapSegment.steps.isEmpty();
+
+        if (hasTaskMapSegment) {
+            Map<String, Object> planEv = new LinkedHashMap<>();
+            planEv.put("task_id", ctx.taskId);
+            planEv.put("package", pkg);
+            planEv.put("has_map", false);
+            planEv.put("map_path", "");
+            planEv.put("from_page", "");
+            planEv.put("to_page", ctx.targetPage != null ? ctx.targetPage.trim() : "");
+            planEv.put("path_steps", ctx.currentTaskMapSegment.steps.size());
+            planEv.put("start_page_override", false);
+            planEv.put("route_source", "task_map");
+            planEv.put("segment_id", ctx.currentTaskMapSegment.segmentId);
+            trace.event("fsm_routing_plan", planEv);
+            return runTaskMapSegmentRouting(ctx, pkg);
+        }
+
         boolean hasMap = ctx.mapPath != null && !ctx.mapPath.trim().isEmpty();
         RouteMap routeMap = null;
         List<RouteMap.Transition> path = null;
@@ -1736,6 +2195,796 @@ public class CortexFsmEngine {
             return State.FAIL;
         }
         return State.VISION_ACT;
+    }
+
+    private State runTaskMapSegmentRouting(Context ctx, String pkg) {
+        Map<String, Object> begin = new LinkedHashMap<>();
+        begin.put("task_id", ctx.taskId);
+        begin.put("package", pkg);
+        begin.put("segment_id", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+        begin.put("steps", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.steps.size() : 0);
+        trace.event("fsm_routing_task_map_begin", begin);
+
+        if (ctx.currentTaskMapSegment == null || ctx.currentTaskMapSegment.steps.isEmpty()) {
+            ctx.taskMapReplayUsed = false;
+            ctx.taskMapReplayFallbackReason = "empty_segment";
+            Map<String, Object> fail = new LinkedHashMap<>();
+            fail.put("task_id", ctx.taskId);
+            fail.put("package", pkg);
+            fail.put("reason", ctx.taskMapReplayFallbackReason);
+            trace.event("fsm_routing_task_map_fallback", fail);
+            return State.VISION_ACT;
+        }
+
+        sleepQuiet(1500L);
+
+        LocatorResolver resolver = new LocatorResolver(perception, trace);
+        List<Map<String, Object>> stepSummaries = new ArrayList<>();
+        boolean allOk = true;
+        int failedIndex = -1;
+        int index = 0;
+        int recoveryAttempts = 0;
+
+        while (index < ctx.currentTaskMapSegment.steps.size()) {
+            TaskMap.Step step = ctx.currentTaskMapSegment.steps.get(index);
+            RouteStepExec exec = executeTaskMapRoutingStep(ctx, pkg, step, resolver, index);
+            stepSummaries.add(exec.step);
+            if (exec.ok) {
+                index += 1;
+                sleepQuiet(400L);
+                continue;
+            }
+
+            if (recoveryAttempts < ROUTING_RECOVERY_MAX) {
+                String failReason = stringOrEmpty(exec.step.get("reason"));
+                boolean recovered = tryTaskMapPopupRecoveryByVision(ctx, pkg, index, step, failReason);
+                Map<String, Object> recEv = new LinkedHashMap<>();
+                recEv.put("task_id", ctx.taskId);
+                recEv.put("package", pkg);
+                recEv.put("segment_id", ctx.currentTaskMapSegment.segmentId);
+                recEv.put("step_id", step != null ? step.stepId : "");
+                recEv.put("index", index);
+                recEv.put("attempt", recoveryAttempts + 1);
+                recEv.put("max_attempts", ROUTING_RECOVERY_MAX);
+                recEv.put("recovered", recovered);
+                recEv.put("reason", failReason);
+                trace.event("fsm_routing_task_map_recovery_result", recEv);
+                if (recovered) {
+                    recoveryAttempts += 1;
+                    sleepQuiet(ROUTING_RECOVERY_POST_ACTION_SLEEP_MS);
+                    continue;
+                }
+            }
+
+            allOk = false;
+            failedIndex = index;
+            break;
+        }
+
+        ctx.routeTrace.clear();
+        ctx.routeResult.clear();
+        ctx.routeResult.put("ok", allOk);
+        ctx.routeResult.put("mode", "task_map");
+        ctx.routeResult.put("package", pkg);
+        ctx.routeResult.put("segment_id", ctx.currentTaskMapSegment.segmentId);
+        ctx.routeResult.put("steps", stepSummaries);
+
+        if (!allOk) {
+            String reason = failedIndex >= 0 && failedIndex < stepSummaries.size()
+                    ? stringOrEmpty(stepSummaries.get(failedIndex).get("reason"))
+                    : "task_map_step_failed";
+            ctx.taskMapReplayUsed = false;
+            ctx.taskMapReplayFallbackReason = reason.isEmpty() ? "task_map_step_failed" : reason;
+            ctx.routeResult.put("reason", ctx.taskMapReplayFallbackReason);
+            Map<String, Object> fail = new LinkedHashMap<>();
+            fail.put("task_id", ctx.taskId);
+            fail.put("package", pkg);
+            fail.put("segment_id", ctx.currentTaskMapSegment.segmentId);
+            fail.put("failed_index", failedIndex);
+            fail.put("reason", ctx.taskMapReplayFallbackReason);
+            trace.event("fsm_routing_task_map_fallback", fail);
+            return State.VISION_ACT;
+        }
+
+        ctx.taskMapReplayUsed = true;
+        ctx.taskMapReplayFallbackReason = "";
+        Map<String, Object> done = new LinkedHashMap<>();
+        done.put("task_id", ctx.taskId);
+        done.put("package", pkg);
+        done.put("segment_id", ctx.currentTaskMapSegment.segmentId);
+        done.put("steps", stepSummaries.size());
+        trace.event("fsm_routing_task_map_done", done);
+        if (ctx.taskMap != null && ctx.taskMap.finishAfterReplay) {
+            Map<String, Object> finish = new LinkedHashMap<>();
+            finish.put("task_id", ctx.taskId);
+            finish.put("package", pkg);
+            finish.put("segment_id", ctx.currentTaskMapSegment.segmentId);
+            finish.put("is_last_segment", ctx.currentSubTaskIsLast);
+            trace.event("fsm_routing_task_map_finish_after_replay", finish);
+            return State.FINISH;
+        }
+        return State.VISION_ACT;
+    }
+
+    private boolean tryTaskMapPopupRecoveryByVision(
+            Context ctx,
+            String pkg,
+            int failedIndex,
+            TaskMap.Step failedStep,
+            String failReason
+    ) {
+        try {
+            Map<String, Object> begin = new LinkedHashMap<>();
+            begin.put("task_id", ctx.taskId);
+            begin.put("package", pkg);
+            begin.put("segment_id", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+            begin.put("failed_index", failedIndex);
+            begin.put("step_id", failedStep != null ? failedStep.stepId : "");
+            begin.put("source_action_id", failedStep != null ? failedStep.sourceActionId : "");
+            begin.put("op", failedStep != null ? failedStep.op : "");
+            begin.put("reason", failReason);
+            trace.event("fsm_routing_task_map_recovery_begin", begin);
+
+            byte[] shotResp = perception != null ? perception.handleScreenshot() : null;
+            byte[] screenshotPng = null;
+            if (shotResp != null && shotResp.length > 1 && shotResp[0] != 0x00) {
+                screenshotPng = Arrays.copyOfRange(shotResp, 1, shotResp.length);
+            }
+            if (screenshotPng == null || screenshotPng.length == 0) {
+                Map<String, Object> ev = new LinkedHashMap<>();
+                ev.put("task_id", ctx.taskId);
+                ev.put("segment_id", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+                ev.put("reason", "screenshot_unavailable");
+                trace.event("fsm_routing_task_map_recovery_skip", ev);
+                return false;
+            }
+
+            LlmConfig cfg = LlmConfig.loadDefault();
+            String prompt = buildTaskMapRecoveryPrompt(ctx, pkg, failedIndex, failedStep, failReason);
+            Map<String, Object> promptEv = new LinkedHashMap<>();
+            promptEv.put("task_id", ctx.taskId);
+            promptEv.put("segment_id", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+            promptEv.put("failed_index", failedIndex);
+            promptEv.put("prompt", prompt);
+            trace.event("llm_prompt_task_map_recovery", promptEv);
+
+            String raw = llmClient.chatOnce(cfg, null, prompt, screenshotPng);
+            Map<String, Object> respEv = new LinkedHashMap<>();
+            respEv.put("task_id", ctx.taskId);
+            respEv.put("segment_id", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+            respEv.put("failed_index", failedIndex);
+            respEv.put("response", raw != null && raw.length() > 2000 ? raw.substring(0, 2000) + "..." : raw);
+            trace.event("llm_response_task_map_recovery", respEv);
+
+            String normalized = CortexLlmHelper.normalizeModelOutput(raw, State.VISION_ACT, ctx);
+            List<Instruction> cmds = parseInstructions(normalized, 1);
+            if (cmds == null || cmds.isEmpty()) {
+                return false;
+            }
+
+            Instruction cmd = cmds.get(0);
+            String argErr = validateVisionCommandArgs(cmd);
+            if (!argErr.isEmpty()) {
+                Map<String, Object> ev = new LinkedHashMap<>();
+                ev.put("task_id", ctx.taskId);
+                ev.put("failed_index", failedIndex);
+                ev.put("command", cmd.raw);
+                ev.put("reason", argErr);
+                trace.event("fsm_routing_task_map_recovery_invalid_command", ev);
+                return false;
+            }
+
+            String op = cmd.op != null ? cmd.op : "";
+            if ("FAIL".equals(op) || "DONE".equals(op)) {
+                Map<String, Object> ev = new LinkedHashMap<>();
+                ev.put("task_id", ctx.taskId);
+                ev.put("failed_index", failedIndex);
+                ev.put("command", cmd.raw);
+                ev.put("result", "not_popup");
+                trace.event("fsm_routing_task_map_recovery_decision", ev);
+                return false;
+            }
+
+            boolean ok = execActionCommand(ctx, cmd);
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("task_id", ctx.taskId);
+            ev.put("failed_index", failedIndex);
+            ev.put("command", cmd.raw);
+            ev.put("ok", ok);
+            trace.event("fsm_routing_task_map_recovery_action", ev);
+            return ok;
+        } catch (Exception e) {
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("task_id", ctx.taskId);
+            ev.put("failed_index", failedIndex);
+            ev.put("err", String.valueOf(e));
+            trace.event("fsm_routing_task_map_recovery_error", ev);
+            return false;
+        }
+    }
+
+    private String buildTaskMapRecoveryPrompt(
+            Context ctx,
+            String pkg,
+            int failedIndex,
+            TaskMap.Step failedStep,
+            String failReason
+    ) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("You are assisting ROUTING recovery on Android UI.\n");
+        sb.append("Task: determine whether a FULL-SCREEN or LARGE blocking popup/overlay is preventing learned-route replay.\n");
+        sb.append("Only handle severe blockers that occupy most of the screen and block normal interaction.\n");
+        sb.append("If such blocker exists, output ONE dismiss action command.\n");
+        sb.append("If not, output FAIL not_popup.\n\n");
+        sb.append("Current context:\n");
+        sb.append("- package: ").append(pkg).append("\n");
+        sb.append("- user_task: ").append(ctx != null ? stringOrEmpty(ctx.userTask) : "").append("\n");
+        sb.append("- segment_id: ").append(ctx != null && ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "").append("\n");
+        sb.append("- failed_route_step_index: ").append(failedIndex).append("\n");
+        sb.append("- failed_step_id: ").append(failedStep != null ? stringOrEmpty(failedStep.stepId) : "").append("\n");
+        sb.append("- failed_source_action_id: ").append(failedStep != null ? stringOrEmpty(failedStep.sourceActionId) : "").append("\n");
+        sb.append("- failed_op: ").append(failedStep != null ? stringOrEmpty(failedStep.op) : "").append("\n");
+        sb.append("- failed_expected: ").append(failedStep != null ? stringOrEmpty(failedStep.expected) : "").append("\n");
+        sb.append("- failed_semantic_note: ").append(failedStep != null ? stringOrEmpty(failedStep.semanticNote) : "").append("\n");
+        sb.append("- failed_reason: ").append(failReason != null ? failReason : "").append("\n\n");
+        sb.append("Allowed outputs (one line only):\n");
+        sb.append("- TAP x y      (x,y normalized in [0,1000])\n");
+        sb.append("- BACK\n");
+        sb.append("- WAIT ms\n");
+        sb.append("- FAIL not_popup\n\n");
+        sb.append("Rules:\n");
+        sb.append("1) Output exactly one command line, no extra text.\n");
+        sb.append("2) Treat as popup only when it is full-screen or large center modal/overlay (roughly >= 40% screen area), and it blocks routing interaction.\n");
+        sb.append("3) Ignore small ads/cards/inline banners/floating widgets that do not block the whole page; for these output FAIL not_popup.\n");
+        sb.append("4) Only close the blocker; do not perform business actions.\n");
+        sb.append("5) If uncertain, output FAIL not_popup.\n");
+        return sb.toString();
+    }
+
+    private RouteStepExec executeTaskMapRoutingStep(
+            Context ctx,
+            String pkg,
+            TaskMap.Step step,
+            LocatorResolver resolver,
+            int index
+    ) {
+        Map<String, Object> stepEv = new LinkedHashMap<>();
+        stepEv.put("task_id", ctx.taskId);
+        stepEv.put("package", pkg);
+        stepEv.put("segment_id", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+        stepEv.put("step_id", step != null ? step.stepId : "");
+        stepEv.put("source_action_id", step != null ? step.sourceActionId : "");
+        stepEv.put("index", index);
+        stepEv.put("op", step != null ? step.op : "");
+        trace.event("fsm_routing_task_map_step_start", stepEv);
+
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("index", index);
+        summary.put("step_id", step != null ? step.stepId : "");
+        summary.put("source_action_id", step != null ? step.sourceActionId : "");
+        summary.put("op", step != null ? step.op : "");
+
+        if (step == null) {
+            summary.put("result", "invalid_step");
+            summary.put("reason", "null_step");
+            trace.event("fsm_routing_task_map_step_end", summary);
+            return new RouteStepExec(summary, false);
+        }
+
+        try {
+            String op = step.op != null ? step.op.trim().toUpperCase(Locale.ROOT) : "";
+            if ("TAP".equals(op)) {
+                TaskMapResolvedPoint point = index == 0
+                        ? resolveFirstTaskMapTapPointWithWindow(ctx, pkg, step, resolver, index)
+                        : resolveRegularTaskMapTapPoint(ctx, pkg, step, resolver, index);
+                boolean ok = execTapAtPoint(ctx, point.x, point.y);
+                summary.put("picked_stage", point.pickedStage);
+                summary.put("picked_bounds", point.bounds != null ? point.bounds.toList() : null);
+                summary.put("picked_point", java.util.Arrays.asList(point.x, point.y));
+                summary.put("result", ok ? "ok" : "tap_fail");
+                summary.put("reason", ok ? "" : "tap_exec_failed");
+                trace.event("fsm_routing_task_map_step_end", summary);
+                return new RouteStepExec(summary, ok);
+            }
+            if ("SWIPE".equals(op)) {
+                SwipeReplaySpec spec = resolveTaskMapSwipeSpec(ctx, step);
+                boolean ok = execSwipeBetweenPoints(ctx, spec.x1, spec.y1, spec.x2, spec.y2, spec.durationMs);
+                summary.put("picked_stage", "swipe_params");
+                summary.put("from_point", java.util.Arrays.asList(spec.x1, spec.y1));
+                summary.put("to_point", java.util.Arrays.asList(spec.x2, spec.y2));
+                summary.put("duration", spec.durationMs);
+                summary.put("result", ok ? "ok" : "swipe_fail");
+                summary.put("reason", ok ? "" : "swipe_exec_failed");
+                trace.event("fsm_routing_task_map_step_end", summary);
+                return new RouteStepExec(summary, ok);
+            }
+            if ("INPUT".equals(op) || "BACK".equals(op) || "WAIT".equals(op)) {
+                Instruction cmd = new Instruction(op, new ArrayList<String>(step.args), op + " " + String.join(" ", step.args));
+                boolean ok = execActionCommand(ctx, cmd);
+                summary.put("result", ok ? "ok" : "action_fail");
+                summary.put("reason", ok ? "" : "action_exec_failed");
+                trace.event("fsm_routing_task_map_step_end", summary);
+                return new RouteStepExec(summary, ok);
+            }
+            summary.put("result", "unsupported");
+            summary.put("reason", "unsupported_task_map_op:" + op);
+            trace.event("fsm_routing_task_map_step_end", summary);
+            return new RouteStepExec(summary, false);
+        } catch (Exception e) {
+            summary.put("result", "resolve_fail");
+            summary.put("reason", String.valueOf(e));
+            trace.event("fsm_routing_task_map_step_end", summary);
+            return new RouteStepExec(summary, false);
+        }
+    }
+
+    private TaskMapResolvedPoint resolveTaskMapTapPoint(TaskMap.Step step, LocatorResolver resolver) throws Exception {
+        Map<String, Object> loc = step != null && step.locator != null
+                ? step.locator
+                : Collections.<String, Object>emptyMap();
+        return resolveTaskMapPoint(loc, "fallback_point", "fallback_point", resolver);
+    }
+
+    private TaskMapResolvedPoint resolveFirstTaskMapTapPointWithWindow(
+            Context ctx,
+            String pkg,
+            TaskMap.Step step,
+            LocatorResolver resolver,
+            int index
+    ) throws Exception {
+        long deadline = System.currentTimeMillis() + ROUTING_FIRST_STEP_WINDOW_MS;
+        int probes = 0;
+        String lastErr = "";
+        while (System.currentTimeMillis() <= deadline) {
+            probes += 1;
+            try {
+                TaskMapResolvedPoint point = resolveRegularTaskMapTapPoint(ctx, pkg, step, resolver, index);
+                Map<String, Object> hitEv = new LinkedHashMap<>();
+                hitEv.put("task_id", ctx.taskId);
+                hitEv.put("package", pkg);
+                hitEv.put("index", index);
+                hitEv.put("probe", probes);
+                hitEv.put("picked_stage", point.pickedStage);
+                trace.event("fsm_routing_task_map_first_step_hit", hitEv);
+                return point;
+            } catch (Exception e) {
+                lastErr = String.valueOf(e);
+            }
+            boolean skipTapped = tryTapRoutingSkipCandidate(ctx, pkg, index, probes);
+            if (skipTapped) {
+                sleepQuiet(ROUTING_FIRST_STEP_AFTER_SKIP_SLEEP_MS);
+            }
+            sleepQuiet(ROUTING_FIRST_STEP_SAMPLE_MS);
+        }
+        throw new IllegalStateException(lastErr.isEmpty()
+                ? "task_map_first_step_window_timeout"
+                : ("task_map_first_step_window_timeout:" + lastErr));
+    }
+
+    private TaskMapResolvedPoint resolveRegularTaskMapTapPoint(
+            Context ctx,
+            String pkg,
+            TaskMap.Step step,
+            LocatorResolver resolver,
+            int index
+    ) throws Exception {
+        Exception last = null;
+        for (int attempt = 1; attempt <= ROUTING_STEP_RESOLVE_RETRY_MAX; attempt++) {
+            try {
+                TaskMapResolvedPoint point = resolveTaskMapTapPointByPriority(step, resolver);
+                if (attempt > 1) {
+                    Map<String, Object> recovered = new LinkedHashMap<>();
+                    recovered.put("task_id", ctx.taskId);
+                    recovered.put("package", pkg);
+                    recovered.put("index", index);
+                    recovered.put("attempt", attempt);
+                    recovered.put("result", "recovered");
+                    recovered.put("picked_stage", point.pickedStage);
+                    trace.event("fsm_routing_task_map_step_retry", recovered);
+                }
+                return point;
+            } catch (Exception e) {
+                last = e;
+                Map<String, Object> retryEv = new LinkedHashMap<>();
+                retryEv.put("task_id", ctx.taskId);
+                retryEv.put("package", pkg);
+                retryEv.put("index", index);
+                retryEv.put("attempt", attempt);
+                retryEv.put("max_attempts", ROUTING_STEP_RESOLVE_RETRY_MAX);
+                retryEv.put("reason", String.valueOf(e));
+                retryEv.put("retrying", attempt < ROUTING_STEP_RESOLVE_RETRY_MAX);
+                trace.event("fsm_routing_task_map_step_retry", retryEv);
+                if (attempt < ROUTING_STEP_RESOLVE_RETRY_MAX) {
+                    sleepQuiet(ROUTING_STEP_RESOLVE_RETRY_SLEEP_MS);
+                }
+            }
+        }
+        throw last != null ? last : new IllegalStateException("task_map_tap_resolve_failed");
+    }
+
+    private TaskMapResolvedPoint resolveTaskMapTapPointByPriority(TaskMap.Step step, LocatorResolver resolver) throws Exception {
+        if (step == null) {
+            throw new IllegalStateException("task_map_step_missing");
+        }
+        if (step.locator != null && !step.locator.isEmpty()) {
+            return resolveTaskMapPoint(step.locator, "fallback_point", "fallback_point", resolver);
+        }
+        if (step.containerProbe != null && !step.containerProbe.isEmpty()) {
+            return resolveTaskMapContainerProbePoint(step);
+        }
+        int[] tapPoint = extractTapPoint(step.tapPoint);
+        if (tapPoint != null) {
+            return new TaskMapResolvedPoint(tapPoint[0], tapPoint[1], null, "tap_point");
+        }
+        int[] fallback = extractPoint(step.fallbackPoint);
+        if (fallback != null) {
+            return new TaskMapResolvedPoint(fallback[0], fallback[1], null, "fallback_point");
+        }
+        throw new IllegalStateException("task_map_tap_target_missing");
+    }
+
+    private TaskMapResolvedPoint resolveTaskMapContainerProbePoint(TaskMap.Step step) throws Exception {
+        int[] tapPoint = extractTapPoint(step != null ? step.tapPoint : null);
+        if (tapPoint == null) {
+            throw new IllegalStateException("task_map_container_probe_missing_tap_point");
+        }
+        List<DumpActionsParser.ActionNode> nodes = captureDumpActionNodes();
+        List<LocatorSemantics.NodeRecord> records = LocatorSemantics.fromActionNodes(nodes);
+        LocatorSemantics.NodeRecord hit = findClickableContainerHitAtPoint(
+                tapPoint[0],
+                tapPoint[1],
+                records,
+                0
+        );
+        if (hit == null) {
+            hit = findClickableContainerHitAtPoint(tapPoint[0], tapPoint[1], records, 20);
+        }
+        if (hit == null) {
+            throw new IllegalStateException("task_map_container_probe_no_clickable_hit");
+        }
+        if (!matchesContainerProbe(step != null ? step.containerProbe : null, hit)) {
+            throw new IllegalStateException("task_map_container_probe_attr_mismatch");
+        }
+        return new TaskMapResolvedPoint(tapPoint[0], tapPoint[1], hit.bounds, "container_probe_hit");
+    }
+
+    private TaskMapResolvedPoint resolveTaskMapPoint(
+            Map<String, Object> locatorMap,
+            String primaryFallbackKey,
+            String secondaryFallbackKey,
+            LocatorResolver resolver
+    ) throws Exception {
+        Map<String, Object> safeLocator = locatorMap != null ? locatorMap : Collections.<String, Object>emptyMap();
+        Locator locator = Locator.fromMap(safeLocator);
+        if (hasUsableLocator(locator)) {
+            try {
+                ResolvedNode node = resolver.resolve(locator);
+                int cx = (node.bounds.left + node.bounds.right) / 2;
+                int cy = (node.bounds.top + node.bounds.bottom) / 2;
+                return new TaskMapResolvedPoint(cx, cy, node.bounds, "locator:" + node.pickedStage);
+            } catch (Exception ignored) {
+            }
+        }
+        int[] fallback = extractPoint(safeLocator.get(primaryFallbackKey));
+        if (fallback == null && secondaryFallbackKey != null && !secondaryFallbackKey.isEmpty()) {
+            fallback = extractPoint(safeLocator.get(secondaryFallbackKey));
+        }
+        if (fallback == null) {
+            throw new IllegalStateException("task_map_locator_missing_fallback");
+        }
+        return resolveTaskMapFallbackPoint(locator, fallback[0], fallback[1]);
+    }
+
+    private TaskMapResolvedPoint resolveTaskMapFallbackPoint(Locator locator, int x, int y) throws Exception {
+        List<DumpActionsParser.ActionNode> nodes = captureDumpActionNodes();
+        DumpActionsParser.ActionNode candidate = findBestActionNodeForPoint(nodes, x, y);
+        if (candidate == null) {
+            throw new IllegalStateException("task_map_fallback_node_missing");
+        }
+        if (locator != null && hasUsableLocator(locator) && !matchesFallbackGuard(locator, candidate, nodes)) {
+            throw new IllegalStateException("task_map_fallback_guard_mismatch");
+        }
+        return new TaskMapResolvedPoint(x, y, candidate.bounds, "fallback_guard");
+    }
+
+    private SwipeReplaySpec resolveTaskMapSwipeSpec(Context ctx, TaskMap.Step step) throws Exception {
+        Map<String, Object> swipe = step != null && step.swipe != null
+                ? step.swipe
+                : Collections.<String, Object>emptyMap();
+        int[] start = extractPoint(swipe.get("start"));
+        int[] end = extractPoint(swipe.get("end"));
+        int duration = parseIntLike(swipe.get("duration_ms"), 0);
+
+        if ((start == null || end == null || duration <= 0) && step != null && step.args != null && step.args.size() >= 5) {
+            int[] p1 = mapPointByProbe(ctx,
+                    Double.parseDouble(step.args.get(0)),
+                    Double.parseDouble(step.args.get(1)));
+            int[] p2 = mapPointByProbe(ctx,
+                    Double.parseDouble(step.args.get(2)),
+                    Double.parseDouble(step.args.get(3)));
+            if (start == null) {
+                start = p1;
+            }
+            if (end == null) {
+                end = p2;
+            }
+            if (duration <= 0) {
+                duration = Math.max(200, parseIntLike(step.args.get(4), 600));
+            }
+        }
+        if (start == null || end == null) {
+            throw new IllegalStateException("task_map_swipe_points_missing");
+        }
+        if (duration <= 0) {
+            duration = 600;
+        }
+        return new SwipeReplaySpec(start[0], start[1], end[0], end[1], duration);
+    }
+
+    private boolean matchesFallbackGuard(
+            Locator locator,
+            DumpActionsParser.ActionNode node,
+            List<DumpActionsParser.ActionNode> nodes
+    ) {
+        if (locator == null || node == null) {
+            return false;
+        }
+        String expectedRid = Util.normalizeResourceId(locator.resourceId);
+        if (!expectedRid.isEmpty() && !expectedRid.equals(Util.normalizeResourceId(node.resourceId))) {
+            return false;
+        }
+        String expectedCls = Util.normalizeClass(locator.className);
+        if (!expectedCls.isEmpty() && !expectedCls.equals(Util.normalizeClass(node.className))) {
+            return false;
+        }
+        String expectedDesc = Util.normalizeText(locator.contentDesc);
+        if (!expectedDesc.isEmpty() && !expectedDesc.equals(Util.normalizeText(node.contentDesc))) {
+            return false;
+        }
+        String expectedText = Util.normalizeText(locator.text);
+        if (!expectedText.isEmpty() && !expectedText.equals(Util.normalizeText(node.text))) {
+            return false;
+        }
+        String expectedParent = Util.normalizeResourceId(locator.parentRid);
+        if (!expectedParent.isEmpty()) {
+            String actualParent = LocatorSemantics.inferParentRid(node, nodes);
+            if (!expectedParent.equals(actualParent)) {
+                return false;
+            }
+        }
+        if (locator.index != null && locator.count != null && locator.count >= 2 && locator.count <= 3) {
+            List<LocatorSemantics.NodeRecord> records = LocatorSemantics.fromActionNodes(nodes);
+            LocatorSemantics.NodeRecord target = null;
+            for (LocatorSemantics.NodeRecord record : records) {
+                if (record != null && record.actionNode == node) {
+                    target = record;
+                    break;
+                }
+            }
+            if (target == null) {
+                return false;
+            }
+            List<LocatorSemantics.NodeRecord> peers =
+                    LocatorSemantics.filterSelfCandidates(locator, records, false);
+            if (!expectedText.isEmpty() && peers.size() > 1) {
+                List<LocatorSemantics.NodeRecord> textPeers =
+                        LocatorSemantics.filterSelfCandidates(locator, peers, true);
+                if (!textPeers.isEmpty()) {
+                    peers = textPeers;
+                }
+            }
+            if (!expectedParent.isEmpty() && peers.size() > 1) {
+                List<LocatorSemantics.NodeRecord> parentPeers =
+                        LocatorSemantics.filterByParentRid(peers, expectedParent);
+                if (!parentPeers.isEmpty()) {
+                    peers = parentPeers;
+                }
+            }
+            int[] indexCount = LocatorSemantics.findPeerIndex(target, peers);
+            if (indexCount == null
+                    || indexCount[0] != locator.index.intValue()
+                    || indexCount[1] != locator.count.intValue()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private DumpActionsParser.ActionNode findBestActionNodeForPoint(
+            List<DumpActionsParser.ActionNode> nodes,
+            int x,
+            int y
+    ) {
+        if (nodes == null || nodes.isEmpty()) {
+            return null;
+        }
+        DumpActionsParser.ActionNode bestContaining = null;
+        long bestContainingScore = Long.MAX_VALUE;
+        DumpActionsParser.ActionNode bestNearest = null;
+        long bestNearestScore = Long.MAX_VALUE;
+        for (DumpActionsParser.ActionNode node : nodes) {
+            if (node == null || node.bounds == null) {
+                continue;
+            }
+            long score = scorePointToBounds(node.bounds, x, y);
+            if (containsPoint(node.bounds, x, y) && score < bestContainingScore) {
+                bestContaining = node;
+                bestContainingScore = score;
+            }
+            if (score < bestNearestScore) {
+                bestNearest = node;
+                bestNearestScore = score;
+            }
+        }
+        return bestContaining != null ? bestContaining : bestNearest;
+    }
+
+    private boolean hasUsableLocator(Locator locator) {
+        return locator != null
+                && (!stringOrEmpty(locator.resourceId).isEmpty()
+                || !stringOrEmpty(locator.text).isEmpty()
+                || !stringOrEmpty(locator.contentDesc).isEmpty()
+                || !stringOrEmpty(locator.className).isEmpty()
+                || !stringOrEmpty(locator.parentRid).isEmpty()
+                || locator.boundsHint != null);
+    }
+
+    private int[] extractTapPoint(List<Object> list) {
+        if (list == null || list.size() < 2) {
+            return null;
+        }
+        Number x = toNumber(list.get(0));
+        Number y = toNumber(list.get(1));
+        if (x == null || y == null) {
+            return null;
+        }
+        return new int[]{x.intValue(), y.intValue()};
+    }
+
+    private LocatorSemantics.NodeRecord findClickableContainerHitAtPoint(
+            int x,
+            int y,
+            List<LocatorSemantics.NodeRecord> records,
+            int margin
+    ) {
+        if (records == null || records.isEmpty()) {
+            return null;
+        }
+        LocatorSemantics.NodeRecord bestContaining = null;
+        long bestContainingArea = Long.MAX_VALUE;
+        for (LocatorSemantics.NodeRecord record : records) {
+            if (record == null || record.bounds == null || record.actionNode == null) {
+                continue;
+            }
+            if ((record.actionNode.type & 0x01) == 0) {
+                continue;
+            }
+            Bounds probeBounds = new Bounds(
+                    record.bounds.left - margin,
+                    record.bounds.top - margin,
+                    record.bounds.right + margin,
+                    record.bounds.bottom + margin
+            );
+            if (!containsPoint(probeBounds, x, y)) {
+                continue;
+            }
+            long area = Math.max(1L, (long) (record.bounds.right - record.bounds.left) * (record.bounds.bottom - record.bounds.top));
+            if (area < bestContainingArea) {
+                bestContainingArea = area;
+                bestContaining = record;
+            }
+        }
+        return bestContaining;
+    }
+
+    private boolean matchesContainerProbe(
+            Map<String, Object> probe,
+            LocatorSemantics.NodeRecord record
+    ) {
+        if (probe == null || probe.isEmpty() || record == null) {
+            return false;
+        }
+        String rid = Util.normalizeResourceId(stringOrEmpty(probe.get("resource_id")));
+        if (!rid.isEmpty() && !rid.equals(record.resourceId)) {
+            return false;
+        }
+        String text = Util.normalizeText(stringOrEmpty(probe.get("text")));
+        if (!text.isEmpty() && !text.equals(record.text)) {
+            return false;
+        }
+        String desc = Util.normalizeText(stringOrEmpty(probe.get("content_desc")));
+        if (!desc.isEmpty() && !desc.equals(record.contentDesc)) {
+            return false;
+        }
+        String cls = Util.normalizeClass(stringOrEmpty(probe.get("class")));
+        if (!cls.isEmpty() && !cls.equals(record.className)) {
+            return false;
+        }
+        String parentRid = Util.normalizeResourceId(stringOrEmpty(probe.get("parent_rid")));
+        return parentRid.isEmpty() || parentRid.equals(record.parentRid);
+    }
+
+    private int[] extractPoint(Object obj) {
+        if (!(obj instanceof List)) {
+            return null;
+        }
+        @SuppressWarnings("unchecked")
+        List<Object> list = (List<Object>) obj;
+        if (list.size() < 2) {
+            return null;
+        }
+        Number x = toNumber(list.get(0));
+        Number y = toNumber(list.get(1));
+        if (x == null || y == null) {
+            return null;
+        }
+        return new int[]{x.intValue(), y.intValue()};
+    }
+
+    private boolean execTapAtPoint(Context ctx, int x, int y) {
+        try {
+            ByteBuffer buf = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
+            buf.putShort((short) x);
+            buf.putShort((short) y);
+            trace.event("exec_tap_start", new LinkedHashMap<String, Object>() {{
+                put("task_id", ctx.taskId);
+                put("x", x);
+                put("y", y);
+                put("source", "task_map");
+            }});
+            execution.handleTap(buf.array());
+            trace.event("exec_tap_done", new LinkedHashMap<String, Object>() {{
+                put("task_id", ctx.taskId);
+                put("x", x);
+                put("y", y);
+                put("source", "task_map");
+            }});
+            return waitForUiStableByDumpActions(ctx, "TASK_MAP_TAP");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean execSwipeBetweenPoints(Context ctx, int x1, int y1, int x2, int y2, int dur) {
+        try {
+            ByteBuffer buf = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN);
+            buf.putShort((short) x1);
+            buf.putShort((short) y1);
+            buf.putShort((short) x2);
+            buf.putShort((short) y2);
+            buf.putShort((short) dur);
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("task_id", ctx.taskId);
+            ev.put("x1", x1);
+            ev.put("y1", y1);
+            ev.put("x2", x2);
+            ev.put("y2", y2);
+            ev.put("duration", dur);
+            ev.put("source", "task_map");
+            trace.event("exec_swipe_start", ev);
+            execution.handleSwipe(buf.array());
+            trace.event("exec_swipe_done", ev);
+            sleepQuiet(SWIPE_POST_WAIT_MS);
+            return waitForUiStableByDumpActions(ctx, "TASK_MAP_SWIPE");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean containsPoint(Bounds b, int x, int y) {
+        return b != null && x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
+    }
+
+    private long scorePointToBounds(Bounds b, int x, int y) {
+        if (b == null) {
+            return Long.MAX_VALUE / 2L;
+        }
+        int cx = (b.left + b.right) / 2;
+        int cy = (b.top + b.bottom) / 2;
+        long dx = Math.abs((long) cx - x);
+        long dy = Math.abs((long) cy - y);
+        long area = Math.max(1L, (long) Math.max(1, b.right - b.left) * (long) Math.max(1, b.bottom - b.top));
+        return dx + dy + (area / 1000L);
     }
 
     /**
@@ -3242,6 +4491,22 @@ public class CortexFsmEngine {
         ev.put("task_id", ctx.taskId);
         ev.put("state", State.VISION_ACT.name());
         trace.event("fsm_state_enter", ev);
+        if (ctx.taskRouteRecorder != null && !ctx.taskRouteRecordStarted) {
+            ctx.taskRouteRecorder.begin(
+                    ctx.taskRouteKey,
+                    ctx.taskId,
+                    ctx.rootUserTask,
+                    ctx.selectedPackage,
+                    ctx.selectedPackageLabel,
+                    ctx.taskMapMode
+            );
+            ctx.taskRouteRecordStarted = true;
+            Map<String, Object> beginEv = new LinkedHashMap<>();
+            beginEv.put("task_id", ctx.taskId);
+            beginEv.put("task_key_hash", ctx.taskRouteKeyHash);
+            beginEv.put("source", ctx.source);
+            trace.event("task_route_record_begin", beginEv);
+        }
 
         // Turn limit by sub_task mode:
         // - single: 30
@@ -3566,7 +4831,13 @@ public class CortexFsmEngine {
 
             boolean retryAction = false;
             for (Instruction cmd : commands) {
+                TaskRouteRecord.Action routeAction = buildTaskRouteAction(ctx, cmd, structured);
                 if ("DONE".equals(cmd.op)) {
+                    if (routeAction != null) {
+                        routeAction.execResult = "done";
+                        ctx.taskRouteRecorder.appendAction(routeAction);
+                        traceTaskRouteRecordAction(ctx, routeAction);
+                    }
                     String doneSummary = cmd.args.isEmpty() ? "" : String.join(" ", cmd.args).trim();
                     if (doneSummary.isEmpty()) {
                         doneSummary = !observeResult.isEmpty() ? observeResult : "";
@@ -3590,11 +4861,23 @@ public class CortexFsmEngine {
                     return State.FINISH;
                 }
                 if ("FAIL".equals(cmd.op)) {
+                    if (routeAction != null) {
+                        routeAction.execResult = "fail";
+                        routeAction.execError = cmd.args.isEmpty() ? "" : String.join(" ", cmd.args);
+                        ctx.taskRouteRecorder.appendAction(routeAction);
+                        traceTaskRouteRecordAction(ctx, routeAction);
+                    }
                     String reason = cmd.args.isEmpty() ? "" : String.join(" ", cmd.args);
                     ctx.error = "vision_fail:" + reason;
                     return State.FAIL;
                 }
                 if (!execActionCommand(ctx, cmd)) {
+                    if (routeAction != null) {
+                        routeAction.execResult = "fail";
+                        routeAction.execError = ctx.error;
+                        ctx.taskRouteRecorder.appendAction(routeAction);
+                        traceTaskRouteRecordAction(ctx, routeAction);
+                    }
                     if (ctx.error == null || ctx.error.isEmpty()) {
                         ctx.error = "vision_action_exec_failed:" + cmd.op;
                     }
@@ -3614,6 +4897,11 @@ public class CortexFsmEngine {
                         break;
                     }
                     return State.FAIL;
+                }
+                if (routeAction != null) {
+                    routeAction.execResult = "ok";
+                    ctx.taskRouteRecorder.appendAction(routeAction);
+                    traceTaskRouteRecordAction(ctx, routeAction);
                 }
             }
 
@@ -3814,6 +5102,20 @@ public class CortexFsmEngine {
         }
     }
 
+    private static Integer toIntObject(Object o) {
+        if (o == null) {
+            return null;
+        }
+        if (o instanceof Number) {
+            return ((Number) o).intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(o).trim());
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     private static class SkipCandidate {
         final int x;
         final int y;
@@ -3835,6 +5137,36 @@ public class CortexFsmEngine {
         RouteStepExec(Map<String, Object> step, boolean ok) {
             this.step = step != null ? step : new LinkedHashMap<String, Object>();
             this.ok = ok;
+        }
+    }
+
+    private static class TaskMapResolvedPoint {
+        final int x;
+        final int y;
+        final Bounds bounds;
+        final String pickedStage;
+
+        TaskMapResolvedPoint(int x, int y, Bounds bounds, String pickedStage) {
+            this.x = x;
+            this.y = y;
+            this.bounds = bounds;
+            this.pickedStage = pickedStage != null ? pickedStage : "";
+        }
+    }
+
+    private static class SwipeReplaySpec {
+        final int x1;
+        final int y1;
+        final int x2;
+        final int y2;
+        final int durationMs;
+
+        SwipeReplaySpec(int x1, int y1, int x2, int y2, int durationMs) {
+            this.x1 = x1;
+            this.y1 = y1;
+            this.x2 = x2;
+            this.y2 = y2;
+            this.durationMs = durationMs;
         }
     }
 

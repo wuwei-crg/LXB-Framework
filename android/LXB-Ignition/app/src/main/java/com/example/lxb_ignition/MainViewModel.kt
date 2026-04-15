@@ -30,6 +30,7 @@ import com.example.lxb_ignition.model.AppPackageOption
 import com.example.lxb_ignition.model.CoreRuntimeStatus
 import com.example.lxb_ignition.model.NotificationTriggerRuleSummary
 import com.example.lxb_ignition.model.ScheduleSummary
+import com.example.lxb_ignition.model.TaskMapDetail
 import com.example.lxb_ignition.model.TaskSummary
 import com.example.lxb_ignition.model.TracePage
 import com.example.lxb_ignition.model.TraceEntry
@@ -141,6 +142,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val TASK_DND_MODE_SKIP = "skip"
         const val TASK_DND_MODE_OFF = "off"
         const val TASK_DND_MODE_NONE = "none"
+        const val TASK_MAP_MODE_OFF = "off"
+        const val TASK_MAP_MODE_AI = "ai"
+        const val TASK_MAP_MODE_MANUAL = "manual"
         const val NOTIFY_ACTION_USE_MAP_INHERIT = "inherit"
         const val NOTIFY_ACTION_USE_MAP_TRUE = "true"
         const val NOTIFY_ACTION_USE_MAP_FALSE = "false"
@@ -189,6 +193,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 NOTIFY_ACTION_USE_MAP_TRUE -> NOTIFY_ACTION_USE_MAP_TRUE
                 NOTIFY_ACTION_USE_MAP_FALSE -> NOTIFY_ACTION_USE_MAP_FALSE
                 else -> NOTIFY_ACTION_USE_MAP_INHERIT
+            }
+        }
+
+        private fun normalizeTaskMapMode(raw: String?): String {
+            return when (raw?.trim()?.lowercase()) {
+                TASK_MAP_MODE_AI, TASK_MAP_MODE_MANUAL -> TASK_MAP_MODE_MANUAL
+                else -> TASK_MAP_MODE_OFF
             }
         }
     }
@@ -293,6 +304,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var nextMsgId: Long = 1L
     private var coreProbeJob: Job? = null
     private var updateCheckedOnLaunch = false
+    private var taskMapDetailRequestKey: String = ""
 
     private val runtimeController by lazy {
         TaskRuntimeController(
@@ -321,6 +333,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Tasks tab: recent task list (lightweight snapshot).
     private val _taskList = MutableStateFlow<List<TaskSummary>>(emptyList())
     val taskList: StateFlow<List<TaskSummary>> = _taskList.asStateFlow()
+    private val _taskMapDetail = MutableStateFlow<TaskMapDetail?>(null)
+    val taskMapDetail: StateFlow<TaskMapDetail?> = _taskMapDetail.asStateFlow()
+    private val _taskMapDetailLoading = MutableStateFlow(false)
+    val taskMapDetailLoading: StateFlow<Boolean> = _taskMapDetailLoading.asStateFlow()
+    private val _taskMapSaving = MutableStateFlow(false)
+    val taskMapSaving: StateFlow<Boolean> = _taskMapSaving.asStateFlow()
     private val _installedAppList = MutableStateFlow<List<AppPackageOption>>(emptyList())
     val installedAppList: StateFlow<List<AppPackageOption>> = _installedAppList.asStateFlow()
 
@@ -339,6 +357,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val schedulePlaybook = MutableStateFlow("")
     val scheduleEnabled = MutableStateFlow(true)
     val scheduleRecordEnabled = MutableStateFlow(false)
+    val scheduleTaskMapMode = MutableStateFlow(TASK_MAP_MODE_OFF)
 
     // Tasks tab: notification trigger form
     val notifyRuleId = MutableStateFlow("")
@@ -368,6 +387,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val notifyActionPackage = MutableStateFlow("")
     val notifyActionUserPlaybook = MutableStateFlow("")
     val notifyActionRecordEnabled = MutableStateFlow(false)
+    val notifyActionTaskMapMode = MutableStateFlow(TASK_MAP_MODE_OFF)
     val notifyActionUseMapMode = MutableStateFlow(NOTIFY_ACTION_USE_MAP_INHERIT)
 
     private val httpClient = OkHttpClient.Builder()
@@ -712,6 +732,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             .put("trace_mode", "push")
                             .put("trace_udp_port", TRACE_PUSH_PORT)
                             .put("use_map", useMap.value)
+                            .put("task_map_mode", TASK_MAP_MODE_MANUAL)
                             .toString()
                         val payload = json.toByteArray(Charsets.UTF_8)
 
@@ -807,6 +828,240 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLog("[FSM] ${result.first}")
                     appendSystemMessage(result.first)
                 }
+            }
+        }
+    }
+
+    fun clearTaskMapDetail() {
+        taskMapDetailRequestKey = ""
+        _taskMapDetailLoading.value = false
+        _taskMapSaving.value = false
+        _taskMapDetail.value = null
+    }
+
+    fun loadTaskMapDetail(task: TaskSummary) {
+        loadTaskMapDetailByQuery(
+            taskId = task.taskId,
+            taskKeyHash = task.taskKeyHash
+        )
+    }
+
+    fun loadTaskMapDetailByQuery(
+        taskId: String = "",
+        taskKeyHash: String = "",
+        source: String = "",
+        sourceId: String = "",
+        packageName: String = "",
+        userTask: String = "",
+        userPlaybook: String = "",
+        mode: String = ""
+    ) {
+        val port = currentLxbPortOrNull() ?: run {
+            appendSystemMessage("Invalid lxb-core port, cannot load task route details.")
+            clearTaskMapDetail()
+            return
+        }
+        val requestTaskId = taskId.trim()
+        val requestTaskKeyHash = taskKeyHash.trim()
+        val requestSource = source.trim()
+        val requestSourceId = sourceId.trim()
+        val requestPackageName = packageName.trim()
+        val requestUserTask = userTask.trim()
+        val requestUserPlaybook = userPlaybook.trim()
+        val requestMode = mode.trim()
+        val requestKey = listOf(
+            requestTaskId,
+            requestTaskKeyHash,
+            requestSource,
+            requestSourceId,
+            requestPackageName,
+            requestUserTask,
+            requestUserPlaybook,
+            requestMode
+        ).joinToString("|")
+        taskMapDetailRequestKey = requestKey
+        _taskMapDetailLoading.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                coreClientGateway.withClient(port = port) { client ->
+                    val payload = org.json.JSONObject()
+                        .put("action", "get")
+                        .put("task_id", requestTaskId)
+                        .put("task_key_hash", requestTaskKeyHash)
+                        .put("source", requestSource)
+                        .put("source_id", requestSourceId)
+                        .put("package_name", requestPackageName)
+                        .put("user_task", requestUserTask)
+                        .put("user_playbook", requestUserPlaybook)
+                        .put("mode", requestMode)
+                        .put("include_details", true)
+                        .toString()
+                        .toByteArray(Charsets.UTF_8)
+                    val resp = client.sendCommand(
+                        CommandIds.CMD_CORTEX_TASK_MAP,
+                        payload,
+                        timeoutMs = 5_000
+                    )
+                    CoreApiParser.parseTaskMapDetail(resp)
+                }
+            }.getOrElse { e -> Pair("Task route detail query failed: ${e.message}", null) }
+
+            withContext(Dispatchers.Main) {
+                if (taskMapDetailRequestKey == requestKey) {
+                    _taskMapDetail.value = result.second
+                    _taskMapDetailLoading.value = false
+                }
+                appendLog("[TASK_MAP] ${result.first}")
+            }
+        }
+    }
+
+    fun saveManualTaskMapForTask(task: TaskSummary, deleteActionIds: List<String>) {
+        saveManualTaskMapByKey(
+            taskKeyHash = task.taskKeyHash,
+            taskId = task.taskId,
+            deleteActionIds = deleteActionIds,
+            finishAfterReplay = false
+        ) {
+            refreshTaskListOnDevice(silent = true)
+            loadTaskMapDetail(task)
+        }
+    }
+
+    fun saveManualTaskMapByKey(
+        taskKeyHash: String,
+        taskId: String = "",
+        deleteActionIds: List<String>,
+        finishAfterReplay: Boolean,
+        onSaved: (() -> Unit)? = null
+    ) {
+        val port = currentLxbPortOrNull() ?: run {
+            appendSystemMessage("Invalid lxb-core port, cannot save task route.")
+            return
+        }
+        val requestTaskId = taskId.trim()
+        val requestTaskKeyHash = taskKeyHash.trim()
+        if (requestTaskId.isEmpty() && requestTaskKeyHash.isEmpty()) {
+            appendSystemMessage("Task route key is empty.")
+            return
+        }
+        _taskMapSaving.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val msg = runCatching {
+                coreClientGateway.withClient(port = port) { client ->
+                    val deleteArr = org.json.JSONArray()
+                    deleteActionIds.forEach { id ->
+                        val v = id.trim()
+                        if (v.isNotEmpty()) {
+                            deleteArr.put(v)
+                        }
+                    }
+                    val payload = org.json.JSONObject()
+                        .put("action", "save_manual")
+                        .put("task_id", requestTaskId)
+                        .put("task_key_hash", requestTaskKeyHash)
+                        .put("delete_action_ids", deleteArr)
+                        .put("finish_after_replay", finishAfterReplay)
+                        .toString()
+                        .toByteArray(Charsets.UTF_8)
+                    val resp = client.sendCommand(
+                        CommandIds.CMD_CORTEX_TASK_MAP,
+                        payload,
+                        timeoutMs = 5_000
+                    )
+                    val text = resp.toString(Charsets.UTF_8)
+                    val obj = runCatching { org.json.JSONObject(text) }.getOrNull()
+                    if (obj != null && obj.optBoolean("ok", false)) {
+                        val steps = obj.optInt("step_count", 0)
+                        val segments = obj.optInt("segment_count", 0)
+                        val finishMode = if (obj.optBoolean("finish_after_replay", finishAfterReplay)) "on" else "off"
+                        "Task route saved manually: $segments segments, $steps steps, finish_after_replay=$finishMode."
+                    } else {
+                        "Save task route failed: ${text.take(220)}"
+                    }
+                }
+            }.getOrElse { e -> "Save task route failed: ${e.message}" }
+            withContext(Dispatchers.Main) {
+                _taskMapSaving.value = false
+                appendSystemMessage(msg)
+                onSaved?.invoke()
+            }
+        }
+    }
+
+    fun deleteTaskMapForTask(task: TaskSummary) {
+        deleteTaskMapByQuery(
+            taskKeyHash = task.taskKeyHash
+        ) {
+            _taskMapDetail.value = _taskMapDetail.value?.copy(taskMap = null, hasMap = false)
+            refreshTaskListOnDevice(silent = true)
+        }
+    }
+
+    fun deleteTaskMapByQuery(
+        taskKeyHash: String = "",
+        taskId: String = "",
+        source: String = "",
+        sourceId: String = "",
+        packageName: String = "",
+        userTask: String = "",
+        userPlaybook: String = "",
+        mode: String = "",
+        onDeleted: (() -> Unit)? = null
+    ) {
+        val port = currentLxbPortOrNull() ?: run {
+            appendSystemMessage("Invalid lxb-core port, cannot delete task route.")
+            return
+        }
+        val requestTaskKeyHash = taskKeyHash.trim()
+        val requestTaskId = taskId.trim()
+        val requestSource = source.trim()
+        val requestSourceId = sourceId.trim()
+        val requestPackageName = packageName.trim()
+        val requestUserTask = userTask.trim()
+        val requestUserPlaybook = userPlaybook.trim()
+        val requestMode = mode.trim()
+        if (
+            requestTaskKeyHash.isEmpty() &&
+            requestTaskId.isEmpty() &&
+            requestSource.isEmpty() &&
+            requestSourceId.isEmpty()
+        ) {
+            appendSystemMessage("Task route key is empty.")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val msg = runCatching {
+                coreClientGateway.withClient(port = port) { client ->
+                    val payload = org.json.JSONObject()
+                        .put("action", "delete")
+                        .put("task_key_hash", requestTaskKeyHash)
+                        .put("task_id", requestTaskId)
+                        .put("source", requestSource)
+                        .put("source_id", requestSourceId)
+                        .put("package_name", requestPackageName)
+                        .put("user_task", requestUserTask)
+                        .put("user_playbook", requestUserPlaybook)
+                        .put("mode", requestMode)
+                        .toString()
+                        .toByteArray(Charsets.UTF_8)
+                    val resp = client.sendCommand(
+                        CommandIds.CMD_CORTEX_TASK_MAP,
+                        payload,
+                        timeoutMs = 5_000
+                    )
+                    val text = resp.toString(Charsets.UTF_8)
+                    val obj = runCatching { org.json.JSONObject(text) }.getOrNull()
+                    if (obj != null && obj.optBoolean("ok", false)) {
+                        if (obj.optBoolean("deleted", false)) "Task route deleted." else "Task route was already missing."
+                    } else {
+                        "Delete task route failed: ${text.take(220)}"
+                    }
+                }
+            }.getOrElse { e -> "Delete task route failed: ${e.message}" }
+            withContext(Dispatchers.Main) {
+                appendSystemMessage(msg)
+                onDeleted?.invoke()
             }
         }
     }
@@ -1148,6 +1403,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         notifyActionPackage.value = rule.actionPackage
         notifyActionUserPlaybook.value = rule.actionUserPlaybook
         notifyActionRecordEnabled.value = rule.actionRecordEnabled
+        notifyActionTaskMapMode.value = normalizeTaskMapMode(rule.actionTaskMapMode)
         notifyActionUseMapMode.value = when (rule.actionUseMap) {
             true -> NOTIFY_ACTION_USE_MAP_TRUE
             false -> NOTIFY_ACTION_USE_MAP_FALSE
@@ -1183,6 +1439,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         notifyActionPackage.value = ""
         notifyActionUserPlaybook.value = ""
         notifyActionRecordEnabled.value = false
+        notifyActionTaskMapMode.value = TASK_MAP_MODE_OFF
         notifyActionUseMapMode.value = NOTIFY_ACTION_USE_MAP_INHERIT
     }
 
@@ -1208,6 +1465,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .put("package", notifyActionPackage.value.trim())
             .put("user_playbook", notifyActionUserPlaybook.value.trim())
             .put("record_enabled", notifyActionRecordEnabled.value)
+            .put("task_map_mode", normalizeTaskMapMode(notifyActionTaskMapMode.value))
 
         when (normalizeNotifyActionUseMap(notifyActionUseMapMode.value)) {
             NOTIFY_ACTION_USE_MAP_TRUE -> action.put("use_map", true)
@@ -1273,6 +1531,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             playbook = schedulePlaybook.value,
             enabled = scheduleEnabled.value,
             recordEnabled = scheduleRecordEnabled.value,
+            taskMapMode = normalizeTaskMapMode(scheduleTaskMapMode.value),
             runAtRaw = scheduleStartAtMs.value,
             repeatModeRaw = scheduleRepeatMode.value,
             repeatWeekdays = scheduleRepeatWeekdays.value
@@ -1408,6 +1667,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         schedulePlaybook.value = schedule.userPlaybook
         scheduleEnabled.value = schedule.enabled
         scheduleRecordEnabled.value = schedule.recordEnabled
+        scheduleTaskMapMode.value = normalizeTaskMapMode(schedule.taskMapMode)
     }
 
     fun resetScheduleForm() {
@@ -1420,6 +1680,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         schedulePlaybook.value = ""
         scheduleEnabled.value = true
         scheduleRecordEnabled.value = false
+        scheduleTaskMapMode.value = TASK_MAP_MODE_OFF
     }
 
     fun toggleScheduleEnabledOnDevice(schedule: ScheduleSummary, enabled: Boolean) {
@@ -1443,6 +1704,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             playbook = schedule.userPlaybook,
             enabled = enabled,
             recordEnabled = schedule.recordEnabled,
+            taskMapMode = normalizeTaskMapMode(schedule.taskMapMode),
             runAt = schedule.runAtMs,
             repeatMode = schedule.repeatMode.ifBlank { REPEAT_ONCE },
             repeatWeekdays = schedule.repeatWeekdays
@@ -2186,12 +2448,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val app = getApplication<Application>()
         val filter = IntentFilter(WirelessAdbBootstrapService.ACTION_STATUS)
         runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                app.registerReceiver(wirelessBootstrapReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                app.registerReceiver(wirelessBootstrapReceiver, filter)
-            }
+            ContextCompat.registerReceiver(
+                app,
+                wirelessBootstrapReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
         }.onFailure { e ->
             appendLog("[WIRELESS_BOOTSTRAP] receiver register failed: ${e.message}")
         }

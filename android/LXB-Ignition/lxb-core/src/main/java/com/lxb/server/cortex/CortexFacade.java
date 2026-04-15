@@ -5,6 +5,11 @@ import com.lxb.server.perception.PerceptionEngine;
 import com.lxb.server.cortex.json.Json;
 import com.lxb.server.cortex.notify.NotificationTriggerModule;
 import com.lxb.server.cortex.route.RouteExecutionService;
+import com.lxb.server.cortex.taskmap.TaskMap;
+import com.lxb.server.cortex.taskmap.TaskMapAssembler;
+import com.lxb.server.cortex.taskmap.TaskRouteKey;
+import com.lxb.server.cortex.taskmap.TaskRouteRecord;
+import com.lxb.server.cortex.taskmap.TaskMapStore;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -40,6 +45,7 @@ public class CortexFacade {
     private final CortexTaskManager taskManager;
     private final RouteExecutionService routeExecutionService;
     private final NotificationTriggerModule notificationTriggerModule;
+    private final TaskMapStore taskMapStore;
 
     public CortexFacade(PerceptionEngine perceptionEngine, ExecutionEngine executionEngine) {
         this.perceptionEngine = perceptionEngine;
@@ -48,8 +54,9 @@ public class CortexFacade {
         this.trace = new TraceLogger(2000);
         this.locatorResolver = new LocatorResolver(perceptionEngine, trace);
         this.llmClient = new LlmClient();
-        this.fsmEngine = new CortexFsmEngine(perceptionEngine, executionEngine, mapManager, trace);
-        this.taskManager = new CortexTaskManager(fsmEngine);
+        this.taskMapStore = new TaskMapStore();
+        this.fsmEngine = new CortexFsmEngine(perceptionEngine, executionEngine, mapManager, trace, taskMapStore);
+        this.taskManager = new CortexTaskManager(fsmEngine, taskMapStore);
         this.routeExecutionService = new RouteExecutionService(
                 executionEngine,
                 perceptionEngine,
@@ -611,6 +618,7 @@ public class CortexFacade {
             }
             String userPlaybook = stringOrEmpty(req.get("user_playbook"));
             boolean recordEnabled = toBool(req.get("record_enabled"), false);
+            String taskMapMode = stringOrEmpty(req.get("task_map_mode"));
 
             Map<String, Object> schedule = taskManager.addScheduledTask(
                     name,
@@ -624,7 +632,8 @@ public class CortexFacade {
                     repeatMode,
                     repeatWeekdays,
                     userPlaybook,
-                    recordEnabled
+                    recordEnabled,
+                    taskMapMode
             );
 
             Map<String, Object> out = new LinkedHashMap<>();
@@ -760,6 +769,7 @@ public class CortexFacade {
             String userPlaybook = stringOrEmpty(req.get("user_playbook"));
             Boolean enabled = req.containsKey("enabled") ? Boolean.valueOf(toBool(req.get("enabled"), true)) : null;
             boolean recordEnabled = toBool(req.get("record_enabled"), false);
+            String taskMapMode = stringOrEmpty(req.get("task_map_mode"));
 
             Map<String, Object> schedule = taskManager.updateScheduledTask(
                     scheduleId,
@@ -775,7 +785,8 @@ public class CortexFacade {
                     repeatWeekdays,
                     userPlaybook,
                     enabled,
-                    recordEnabled
+                    recordEnabled,
+                    taskMapMode
             );
             if (schedule == null) {
                 return err("schedule not found: " + scheduleId);
@@ -856,6 +867,71 @@ public class CortexFacade {
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("err", String.valueOf(e));
             trace.event("cortex_notify_api_err", ev);
+            return err(String.valueOf(e));
+        }
+    }
+
+    public byte[] handleCortexTaskMap(byte[] payload) {
+        try {
+            String s = payload != null && payload.length > 0
+                    ? new String(payload, StandardCharsets.UTF_8)
+                    : "{}";
+            Map<String, Object> req = Json.parseObject(s);
+            String action = stringOrEmpty(req.get("action")).toLowerCase();
+            if (action.isEmpty()) {
+                action = "get";
+            }
+            String taskKeyHash = stringOrEmpty(req.get("task_key_hash"));
+            String taskId = stringOrEmpty(req.get("task_id"));
+            String source = stringOrEmpty(req.get("source"));
+            String sourceId = stringOrEmpty(req.get("source_id"));
+            String packageName = stringOrEmpty(req.get("package_name"));
+            String userTask = stringOrEmpty(req.get("user_task"));
+            String userPlaybook = stringOrEmpty(req.get("user_playbook"));
+            String mode = stringOrEmpty(req.get("mode"));
+            boolean includeDetails = toBool(req.get("include_details"), false);
+
+            Map<String, Object> out;
+            if ("get".equals(action)) {
+                out = taskManager.getTaskMapStatus(taskKeyHash, taskId, source, sourceId, packageName, userTask, userPlaybook, mode, includeDetails);
+            } else if ("delete".equals(action)) {
+                out = taskManager.deleteTaskMap(taskKeyHash, taskId, source, sourceId, packageName, userTask, userPlaybook, mode);
+                if (toBool(out.get("ok"), false)) {
+                    Map<String, Object> ev = new LinkedHashMap<>();
+                    ev.put("task_key_hash", out.get("task_key_hash"));
+                    trace.event("task_map_deleted", ev);
+                }
+            } else if ("save_manual".equals(action)) {
+                java.util.List<String> deleteActionIds = new java.util.ArrayList<String>();
+                Object listObj = req.get("delete_action_ids");
+                boolean finishAfterReplay = toBool(req.get("finish_after_replay"), false);
+                if (listObj instanceof java.util.List) {
+                    @SuppressWarnings("unchecked")
+                    java.util.List<Object> src = (java.util.List<Object>) listObj;
+                    for (Object item : src) {
+                        String id = stringOrEmpty(item);
+                        if (!id.isEmpty()) {
+                            deleteActionIds.add(id);
+                        }
+                    }
+                }
+                out = taskManager.saveManualTaskMap(taskKeyHash, taskId, deleteActionIds, finishAfterReplay);
+            } else if ("set_mode".equals(action)) {
+                out = taskManager.setTaskMapMode(source, sourceId, mode, taskId);
+            } else {
+                return err("unsupported task_map action: " + action);
+            }
+
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("action", action);
+            ev.put("ok", toBool(out.get("ok"), false));
+            ev.put("task_key_hash", out.get("task_key_hash"));
+            trace.event("cortex_task_map_api", ev);
+            return ok(Json.stringify(out));
+        } catch (Exception e) {
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("err", String.valueOf(e));
+            trace.event("cortex_task_map_api_err", ev);
             return err(String.valueOf(e));
         }
     }

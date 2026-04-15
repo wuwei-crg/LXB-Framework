@@ -4,7 +4,7 @@
 
 # LXB-Framework
 
-**Experimental Android automation framework for repetitive, linear daily tasks**
+**Experimental Android automation framework focused on repetitive, linear daily tasks**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Android 11+](https://img.shields.io/badge/Android-11%2B-34A853?logo=android&logoColor=white)]()
@@ -14,7 +14,7 @@
 
 </div>
 
-LXB-Framework does not let the model freely roam across the whole phone UI. It uses a **Route-Then-Act** pipeline: prebuilt navigation maps handle deterministic page routing, and the vision model only steps in when real on-screen interaction is needed.
+LXB-Framework does not let the model freely explore the whole phone UI. It follows a **Route-Then-Act** pipeline: deterministic routing is handled first, and the vision model only steps in when real dynamic interaction is needed.
 
 ---
 
@@ -24,21 +24,22 @@ LXB-Framework does not let the model freely roam across the whole phone UI. It u
 
 Current core capabilities:
 
-- **Chat tasks**: submit one natural-language task and run it immediately
-- **Scheduled tasks**: one-shot / daily / weekly execution, with list-level enable/disable toggles
-- **Notification-triggered tasks**: trigger tasks from notification dump matching with package, title, body, and optional LLM filtering
-- **Playbook fallback**: add step-by-step instructions for apps that do not have a navigation map yet
+- **Direct tasks**: submit one natural-language task and run it immediately
+- **Scheduled tasks**: one-shot / daily / weekly execution, with list-level enable / disable toggles
+- **Notification-triggered tasks**: trigger tasks from notifications using package, title, body, and optional LLM filtering
+- **Task route editing**: each task can keep its own task route, and the frontend can manually delete noisy trace actions before saving the final route
+- **Playbook fallback**: add step-by-step instructions for apps that do not have a stable route yet
 - **Dual startup paths**: `Wireless ADB` for non-root devices, `Root startup` for rooted devices
 - **Trace page**: structured core trace cards, detail viewer, and local export
 
 ## How It Works
 
-The Route-Then-Act pipeline is supported by several cooperating pieces:
+The Route-Then-Act pipeline is supported by several cooperating parts:
 
-- **Pipeline split**: tasks are divided into a routing phase and an action phase. Routing is handled as deterministically as possible with maps, then the VLM handles dynamic UI work.
-- **FSM orchestration**: a full FSM keeps INIT, TASK_DECOMPOSE, APP_RESOLVE, ROUTE_PLAN, ROUTING, VISION_ACT, and FINISH/FAIL traceable and debuggable.
-- **`app_process` daemon**: `lxb-core` runs as a shell-level process outside the normal Android app lifecycle, which makes it suitable for background execution, scheduled tasks, and notification triggers.
-- **Device-side split**: `LXB-Ignition` handles startup, configuration, task management, and logs; `lxb-core` handles local automation execution.
+- **Phase split**: each task is split into route navigation and visual execution. Anything stable enough for routing should not consume vision-model budget.
+- **FSM orchestration**: `INIT -> TASK_DECOMPOSE -> APP_RESOLVE -> ROUTING -> VISION_ACT -> FINISH/FAIL`
+- **`app_process` daemon**: `lxb-core` runs as a shell-level background process outside the normal Android app lifecycle, which makes it suitable for always-on runtime, schedules, and notification triggers
+- **Device-side separation**: `LXB-Ignition` handles startup, configuration, task management, and logs; `lxb-core` handles local automation execution
 
 ![Overall architecture](resources/architecture_overall.png)
 
@@ -46,19 +47,23 @@ The Route-Then-Act pipeline is supported by several cooperating pieces:
 
 ## Current Product Shape
 
-The current app is organized into four main areas:
+The app is currently organized into four main pages:
 
-- **Home**: choose startup method (`Wireless ADB` / `Root`), check runtime state, submit chat tasks
-- **Tasks**: manage schedules, notification-triggered rules, and recent runs
-- **Config**: control mode, device-side LLM, unlock policy, map sync, language
-- **Logs**: trace cards, trace details, and trace export
+- **Home**: start / stop core, view runtime state, and jump into first-time setup
+- **Tasks**: quick task, schedules, notification triggers, and recent runs
+- **Config**: control mode config, device-side LLM config, unlock policy, route sync/source, and language
+- **Logs**: trace cards, detail dialog, and trace export
 
 Important UX points in the current design:
 
-- schedules and notification rules can both be **enabled/disabled directly from the list page**
-- input can prefer **ADB Keyboard** and fall back automatically when unavailable
-- touch injection supports both **Shell** and **UIAutomator** strategies
-- UI language follows the system by default: Chinese phones default to Chinese, everything else defaults to English; once the user switches manually, the manual choice wins
+- Home is optimized around one thing first: **start core**. When core is running, stop is emphasized. When core is offline, the two startup paths are emphasized.
+- The Tasks page puts **task runtime status** first, then splits task abilities into **Quick task / Schedules / Notification triggers / Recent runs**.
+- Schedules and notification rules both support **direct toggling from the list page** without opening the edit page.
+- The route editor is currently **manual-review only**: it edits the **latest captured trace**, not only successful traces.
+- `task route mode` is shown as **On / Off** in the frontend. “On” means execute with saved route support.
+- Input prefers **ADB Keyboard** when available and falls back automatically otherwise.
+- Touch injection supports both **Shell** and **UIAutomator**.
+- UI language follows the system by default: Chinese devices default to Chinese, everything else defaults to English; once changed manually, the manual choice wins.
 
 ## Requirements
 
@@ -69,11 +74,11 @@ Before starting, make sure:
 - for **Root startup**: the device is rooted and can grant `su`
 - an **OpenAI Chat Completions-compatible** LLM / VLM endpoint is configured
   - the app now auto-completes `/chat/completions`
-  - you can enter a higher-level base URL such as `https://xxx/v1`, and the app shows the resolved final request URL in real time
+  - you can enter a higher-level base URL and the app shows the resolved final request URL in real time
 
 ## Quick Start
 
-### Option 1: Non-root device (`Wireless ADB startup`)
+### Option 1: Non-root device (`Wireless ADB`)
 
 1. Install the latest APK from [Releases](https://github.com/wuwei-crg/LXB-Framework/releases)
 2. Enable the required developer settings on the phone:
@@ -88,32 +93,32 @@ Before starting, make sure:
    | ColorOS (OPPO / OnePlus) | disable `Permission monitoring` |
    | Flyme (Meizu) | disable `Flyme payment protection` |
 
-4. Open `LXB-Ignition` and enter `Wireless ADB startup`
-5. Follow the in-app guide once:
+4. Open `LXB-Ignition` and tap **ADB startup**
+5. Complete the guide once:
    - open Developer Options
    - enable Wireless debugging
    - open `Pair device with pairing code`
-   - enter the 6-digit pairing code in the app notification
-6. After pairing, start core from the home page. Later launches usually do not need re-pairing as long as Wireless debugging is enabled.
+   - enter the 6-digit code through the app notification
+6. After the first pairing, later startups usually do not need re-pairing as long as Wireless debugging is enabled
 
 ### Option 2: Rooted device (`Root startup`)
 
 1. Install the APK
-2. Open `Root startup` from the home page
-3. Confirm root permission is available
-4. Start core directly through `su`
+2. Tap **Root startup** on the home page
+3. Confirm root permission can be granted
+4. The app starts `lxb-core` directly through `su`
 
-## First Configuration Pass
+## Recommended First Configuration Pass
 
-After core is up, check these pages in `Config` first.
+After core is up, check these pages in `Config`.
 
 ### 1. Control Mode Config
 
-This page decides how taps, swipes, and text input are executed:
+This page decides how taps, swipes, and input are executed:
 
-- **Touch input mode**: `Shell` / `UIAutomator`
-- **ADB Keyboard detection**: recommended for more stable Chinese input
-- **Task-time Do Not Disturb**: keep current state, set OFF, or set NONE
+- **Touch mode**: `Shell` / `UIAutomator`
+- **Input mode**: installing **ADB Keyboard** is strongly recommended
+- **Task-time Do Not Disturb**: do nothing / turn sound back on / fully mute
 
 ### 2. Device-side LLM Config
 
@@ -125,31 +130,33 @@ Fill in:
 
 Current extras:
 
-- **resolved final request URL preview**
+- **real resolved request URL preview**
 - **multiple saved local LLM profiles**
 - **masked API key display**
+- **test-and-sync to device**
 
 ### 3. Unlock & Lock Policy
 
-- auto unlock before routing
+- auto unlock before route execution
 - auto lock after task
-- lock PIN / password, only used when swipe alone is not enough
+- lockscreen PIN / password, only when swipe alone is not enough
 
-### 4. Map Sync & Source
+### 4. Route Sync & Source
 
-- set MapRepo URL
-- choose runtime map source (`stable` / `candidate` / `burn`)
-- sync maps by package or identifier
+- set the MapRepo address
+- choose runtime source (`stable` / `candidate` / `burn`)
+- pull route assets by package or identifier
+- inspect active map status
 
 ## Task Types
 
-### Chat Tasks
+### Direct Tasks
 
-Submit one natural-language request from the home page, for example:
+Submit one natural-language task from the home page or quick-task page, for example:
 
 ```text
 Open WeChat and send "hello" to File Transfer
-Open Bilibili and post a new status with title test and content test
+Open Bilibili and publish a new post with title test and content test
 ```
 
 ### Scheduled Tasks
@@ -160,7 +167,8 @@ Create them in `Tasks -> Schedules`:
 - optional target package
 - optional Playbook
 - optional screen recording
-- **can be enabled/disabled directly from the list page**
+- optional saved-route execution
+- **can be enabled / disabled directly from the list page**
 
 ### Notification-Triggered Tasks
 
@@ -170,35 +178,56 @@ Create them in `Tasks -> Notification Triggers`:
 - optional title / body match
 - optional LLM condition
 - optional active time window
-- optional task recording
-- **can be enabled/disabled directly from the list page**
+- optional recording
+- optional route execution
+- **can be enabled / disabled directly from the list page**
 
 Current notification-trigger pipeline:
 
 1. dump notifications
 2. detect new notifications
-3. evaluate rules in order
+3. evaluate rules in sequence
 4. build the final task when matched
 5. push that task into the core queue
 
+## Task Routes
+
+The current design has moved from “global app maps” toward **task-local route assets**.
+
+### Current logic
+
+- core records the latest task trace during execution
+- if a task succeeds, the latest successful trace is also retained
+- the frontend route editor now defaults to the **latest captured trace**, not only the latest successful one
+- you can delete noisy actions and manually save the final task route
+- saved task routes can be used by later routing passes
+
+### Current frontend state
+
+- **AI-assisted route optimization is temporarily hidden**
+- only **manual review / manual deletion / manual save** is exposed right now
+- the “Finish task directly after replay” switch controls whether:
+  - a successful route replay ends the current task immediately
+  - or the flow continues into later visual execution
+
 ## Trace & Debugging
 
-The logs page is now a trace viewer instead of a plain text log panel:
+The logs page is now a structured trace viewer instead of a plain log panel:
 
-- each trace entry is rendered as an individual card
+- each trace entry is shown as an individual card
 - tapping a card opens structured details
 - latest traces load first
 - older traces load on upward scrolling
-- cached traces can be exported to local storage
+- cached traces can be exported locally
 
-This is the most useful page for debugging FSM flow, notification triggers, and execution failures.
+This is the most useful page for debugging FSM transitions, notification-trigger pipelines, route replay, and visual-action failures.
 
 ## Usage Notes
 
 - set `LXB-Ignition` battery policy to **Unrestricted**
 - without ADB Keyboard, Chinese input falls back to clipboard / shell-based paths and compatibility may vary by app
-- for apps without maps, write short and explicit Playbooks
-- some ROMs behave better with `Shell`, others with `UIAutomator`, so test both control paths
+- for apps without stable routes, write short and explicit Playbooks
+- some ROMs behave better with `Shell`, others with `UIAutomator`, so test both paths
 
 ## Developer Debug Workflow
 
@@ -218,8 +247,8 @@ Then open the debug build of `LXB-Ignition` on the phone.
 
 | Repository | Description |
 |------------|-------------|
-| [LXB-MapBuilder](https://github.com/wuwei-crg/LXB-MapBuilder) | map building and publishing tool |
-| [LXB-MapRepo](https://github.com/wuwei-crg/LXB-MapRepo) | stable / candidate map repository |
+| [LXB-MapBuilder](https://github.com/wuwei-crg/LXB-MapBuilder) | route building and publishing tool |
+| [LXB-MapRepo](https://github.com/wuwei-crg/LXB-MapRepo) | stable / candidate route repository |
 
 ## Acknowledgements
 

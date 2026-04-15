@@ -177,6 +177,9 @@ public class CommandDispatcher {
                 case CommandIds.CMD_CORTEX_NOTIFY:
                     response = cortexFacade.handleCortexNotify(payload);
                     break;
+                case CommandIds.CMD_CORTEX_TASK_MAP:
+                    response = cortexFacade.handleCortexTaskMap(payload);
+                    break;
 
                 default:
                     System.out.println(TAG + " Unimplemented command: 0x" +

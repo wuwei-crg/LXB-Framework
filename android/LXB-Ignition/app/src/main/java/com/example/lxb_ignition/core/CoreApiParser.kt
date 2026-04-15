@@ -3,6 +3,12 @@ package com.example.lxb_ignition.core
 import com.example.lxb_ignition.model.AppPackageOption
 import com.example.lxb_ignition.model.NotificationTriggerRuleSummary
 import com.example.lxb_ignition.model.ScheduleSummary
+import com.example.lxb_ignition.model.TaskMapDetail
+import com.example.lxb_ignition.model.TaskMapSegmentSnapshot
+import com.example.lxb_ignition.model.TaskMapSnapshot
+import com.example.lxb_ignition.model.TaskMapStepSnapshot
+import com.example.lxb_ignition.model.TaskRouteActionSnapshot
+import com.example.lxb_ignition.model.TaskRouteRecordSnapshot
 import com.example.lxb_ignition.model.TaskSummary
 import com.example.lxb_ignition.model.TraceEntry
 import com.example.lxb_ignition.model.TraceMetaItem
@@ -97,6 +103,9 @@ object CoreApiParser {
                 targetPage = t.optString("target_page", ""),
                 source = t.optString("source", ""),
                 scheduleId = t.optString("schedule_id", ""),
+                taskKeyHash = t.optString("task_key_hash", ""),
+                taskMapMode = t.optString("task_map_mode", ""),
+                hasTaskMap = t.optBoolean("has_task_map", false),
                 memoryApplied = t.optBoolean("memory_applied", false),
                 recordEnabled = t.optBoolean("record_enabled", false),
                 recordFile = t.optString("record_file", ""),
@@ -134,6 +143,7 @@ object CoreApiParser {
                 packageName = s.optString("package", ""),
                 startPage = s.optString("start_page", ""),
                 recordEnabled = s.optBoolean("record_enabled", false),
+                taskMapMode = s.optString("task_map_mode", "off"),
                 runAtMs = s.optLong("run_at", 0L),
                 repeatMode = s.optString(
                     "repeat_mode",
@@ -228,6 +238,7 @@ object CoreApiParser {
                 actionPackage = action.optString("package", ""),
                 actionUserPlaybook = action.optString("user_playbook", ""),
                 actionRecordEnabled = action.optBoolean("record_enabled", false),
+                actionTaskMapMode = action.optString("task_map_mode", "off"),
                 actionUseMap = if (action.has("use_map")) action.optBoolean("use_map", true) else null
             )
             dedup[id] = summary
@@ -298,6 +309,30 @@ object CoreApiParser {
         )
     }
 
+    fun parseTaskMapDetail(payload: ByteArray): Pair<String, TaskMapDetail?> {
+        val text = payload.toString(Charsets.UTF_8)
+        val obj = runCatching { JSONObject(text) }.getOrNull()
+            ?: return Pair("Invalid task route detail response: ${text.take(180)}", null)
+        if (!obj.optBoolean("ok", false)) {
+            return Pair("Task route detail query failed: ${text.take(220)}", null)
+        }
+        val detail = TaskMapDetail(
+            taskKeyHash = obj.optString("task_key_hash", ""),
+            mode = obj.optString("mode", ""),
+            source = obj.optString("source", ""),
+            sourceId = obj.optString("source_id", ""),
+            userTask = obj.optString("user_task", ""),
+            packageName = obj.optString("package_name", ""),
+            hasMap = obj.optBoolean("has_map", false),
+            hasLatestSuccessRecord = obj.optBoolean("has_latest_success_record", false),
+            hasLatestAttemptRecord = obj.optBoolean("has_latest_attempt_record", false),
+            taskMap = obj.optJSONObject("task_map")?.let(::parseTaskMapSnapshot),
+            latestSuccessRecord = obj.optJSONObject("latest_success_record")?.let(::parseTaskRouteRecordSnapshot),
+            latestAttemptRecord = obj.optJSONObject("latest_attempt_record")?.let(::parseTaskRouteRecordSnapshot)
+        )
+        return Pair("Task route details loaded.", detail)
+    }
+
     private fun parseTracePageObject(obj: JSONObject): Pair<String, TracePage> {
         val arr = obj.optJSONArray("items") ?: JSONArray()
         val items = ArrayList<TraceEntry>(arr.length())
@@ -326,6 +361,104 @@ object CoreApiParser {
             oldestSeq = 0L,
             newestSeq = 0L
         )
+    }
+
+    private fun parseTaskMapSnapshot(obj: JSONObject): TaskMapSnapshot {
+        val segments = mutableListOf<TaskMapSegmentSnapshot>()
+        val arr = obj.optJSONArray("segments") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            val segObj = arr.optJSONObject(i) ?: continue
+            val steps = mutableListOf<TaskMapStepSnapshot>()
+            val stepArr = segObj.optJSONArray("steps") ?: JSONArray()
+            for (j in 0 until stepArr.length()) {
+                val stepObj = stepArr.optJSONObject(j) ?: continue
+                steps += TaskMapStepSnapshot(
+                    stepId = stepObj.optString("step_id", ""),
+                    sourceActionId = stepObj.optString("source_action_id", ""),
+                    op = stepObj.optString("op", ""),
+                    args = jsonArrayToStringList(stepObj.optJSONArray("args")),
+                    fallbackPoint = normalizeText(stepObj.opt("fallback_point")?.toString().orEmpty(), 240),
+                    semanticNote = stepObj.optString("semantic_note", ""),
+                    expected = stepObj.optString("expected", ""),
+                    locatorFields = jsonObjectToMetaItems(stepObj.optJSONObject("locator"))
+                )
+            }
+            segments += TaskMapSegmentSnapshot(
+                segmentId = segObj.optString("segment_id", ""),
+                subTaskId = segObj.optString("sub_task_id", ""),
+                subTaskIndex = segObj.optInt("sub_task_index", 0),
+                subTaskDescription = segObj.optString("sub_task_description", ""),
+                successCriteria = segObj.optString("success_criteria", ""),
+                packageName = segObj.optString("package_name", ""),
+                packageLabel = segObj.optString("package_label", ""),
+                inputs = jsonArrayToStringList(segObj.optJSONArray("inputs")),
+                outputs = jsonArrayToStringList(segObj.optJSONArray("outputs")),
+                steps = steps
+            )
+        }
+        return TaskMapSnapshot(
+            schema = obj.optString("schema", ""),
+            mode = obj.optString("mode", ""),
+            packageName = obj.optString("package_name", ""),
+            packageLabel = obj.optString("package_label", ""),
+            createdFromTaskId = obj.optString("created_from_task_id", ""),
+            createdAtMs = obj.optLong("created_at_ms", 0L),
+            lastReplayStatus = obj.optString("last_replay_status", ""),
+            finishAfterReplay = obj.optBoolean("finish_after_replay", false),
+            segments = segments
+        )
+    }
+
+    private fun parseTaskRouteRecordSnapshot(obj: JSONObject): TaskRouteRecordSnapshot {
+        val actions = mutableListOf<TaskRouteActionSnapshot>()
+        val arr = obj.optJSONArray("actions") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            val actionObj = arr.optJSONObject(i) ?: continue
+            actions += TaskRouteActionSnapshot(
+                actionId = actionObj.optString("action_id", ""),
+                subTaskId = actionObj.optString("sub_task_id", ""),
+                turn = actionObj.optInt("turn", 0),
+                op = actionObj.optString("op", ""),
+                args = jsonArrayToStringList(actionObj.optJSONArray("args")),
+                rawCommand = actionObj.optString("raw_command", ""),
+                execResult = actionObj.optString("exec_result", ""),
+                execError = actionObj.optString("exec_error", ""),
+                createdPageSemantics = actionObj.optString("created_page_semantics", ""),
+                locatorFields = jsonObjectToMetaItems(actionObj.optJSONObject("locator")),
+                visionFields = jsonObjectToMetaItems(actionObj.optJSONObject("vision"))
+            )
+        }
+        return TaskRouteRecordSnapshot(
+            schema = obj.optString("schema", ""),
+            taskId = obj.optString("task_id", ""),
+            rootTask = obj.optString("root_task", ""),
+            packageName = obj.optString("package_name", ""),
+            packageLabel = obj.optString("package_label", ""),
+            createdAtMs = obj.optLong("created_at_ms", 0L),
+            status = obj.optString("status", ""),
+            finalState = obj.optString("final_state", ""),
+            reason = obj.optString("reason", ""),
+            actions = actions
+        )
+    }
+
+    private fun jsonObjectToMetaItems(obj: JSONObject?): List<TraceMetaItem> {
+        if (obj == null) return emptyList()
+        val out = mutableListOf<TraceMetaItem>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = obj.opt(key) ?: continue
+            val rendered = when (value) {
+                is JSONObject -> normalizeText(value.toString(), 320)
+                is JSONArray -> normalizeText(value.toString(), 320)
+                else -> normalizeText(value.toString(), 320)
+            }
+            if (rendered.isNotBlank()) {
+                out += TraceMetaItem(label = key, value = rendered)
+            }
+        }
+        return out
     }
 
     private fun parseTraceEntry(line: String, seq: Long): TraceEntry {
