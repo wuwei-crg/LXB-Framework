@@ -13,8 +13,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -36,19 +40,23 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -63,7 +71,12 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
@@ -75,12 +88,24 @@ import com.example.lxb_ignition.model.AppPackageOption
 import com.example.lxb_ignition.model.CoreRuntimeStatus
 import com.example.lxb_ignition.model.NotificationTriggerRuleSummary
 import com.example.lxb_ignition.model.ScheduleSummary
+import com.example.lxb_ignition.model.TaskMapDetail
+import com.example.lxb_ignition.model.TaskMapSegmentSnapshot
+import com.example.lxb_ignition.model.TaskMapSnapshot
+import com.example.lxb_ignition.model.TaskMapStepSnapshot
+import com.example.lxb_ignition.model.TaskRouteActionSnapshot
+import com.example.lxb_ignition.model.TaskRouteRecordSnapshot
 import com.example.lxb_ignition.model.TaskSummary
 import com.example.lxb_ignition.model.TraceEntry
 import com.example.lxb_ignition.model.TraceMetaItem
 import com.example.lxb_ignition.model.TaskRuntimeUiStatus
 import com.example.lxb_ignition.model.WirelessBootstrapStatus
 import com.example.lxb_ignition.ui.theme.LXBIgnitionTheme
+import com.example.lxb_ignition.ui.theme.AppError
+import com.example.lxb_ignition.ui.theme.AppErrorSoft
+import com.example.lxb_ignition.ui.theme.AppSuccess
+import com.example.lxb_ignition.ui.theme.AppSuccessSoft
+import com.example.lxb_ignition.ui.theme.AppWarning
+import com.example.lxb_ignition.ui.theme.AppWarningSoft
 import com.lxb.server.cortex.LlmClient
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -144,10 +169,20 @@ fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
     }
 
     CompositionLocalProvider(LocalUiI18n provides i18n) {
-        val tabs = listOf("Control", "Tasks", "Config", "Logs")
+        val tabs = listOf(
+            "Control" to "⌂",
+            "Tasks" to "✓",
+            "Config" to "⚙",
+            "Logs" to "≡"
+        )
         Scaffold(
             topBar = {
                 TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
+                        actionIconContentColor = MaterialTheme.colorScheme.primary
+                    ),
                     title = { Text("${tr("LXB Ignition")} v${BuildConfig.VERSION_NAME}") },
                     actions = {
                         TextButton(onClick = { viewModel.checkAppUpdateFromGithub() }) {
@@ -158,13 +193,24 @@ fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
             },
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             bottomBar = {
-                NavigationBar {
-                    tabs.forEachIndexed { index, rawLabel ->
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp
+                ) {
+                    tabs.forEachIndexed { index, tab ->
+                        val rawLabel = tab.first
                         val label = tr(rawLabel)
                         NavigationBarItem(
                             selected = selectedTab == index,
                             onClick = { selectedTab = index },
-                            icon = { Text(label.take(1), fontSize = 18.sp) },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f)
+                            ),
+                            icon = { Text(tab.second, fontSize = 18.sp) },
                             label = { Text(label) }
                         )
                     }
@@ -172,7 +218,11 @@ fun LXBIgnitionApp(viewModel: MainViewModel = viewModel()) {
             }
         ) { innerPadding ->
             when (selectedTab) {
-                0 -> ControlTab(viewModel, Modifier.padding(innerPadding))
+                0 -> ControlTab(
+                    viewModel = viewModel,
+                    modifier = Modifier.padding(innerPadding),
+                    onOpenConfig = { selectedTab = 2 }
+                )
                 1 -> TasksTab(viewModel, Modifier.padding(innerPadding))
                 2 -> ConfigTab(viewModel, Modifier.padding(innerPadding))
                 3 -> LogsTab(viewModel, Modifier.padding(innerPadding))
@@ -269,7 +319,11 @@ private fun resolveWirelessGuideUiState(status: WirelessBootstrapStatus): Wirele
 }
 
 @Composable
-fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+fun ControlTab(
+    viewModel: MainViewModel,
+    modifier: Modifier = Modifier,
+    onOpenConfig: () -> Unit = {}
+) {
     val coreRuntime by viewModel.coreRuntimeStatus.collectAsState()
     val wireless by viewModel.wirelessBootstrapStatus.collectAsState()
     val wirelessDebuggingEnabled by viewModel.wirelessDebuggingEnabled.collectAsState()
@@ -281,13 +335,11 @@ fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         0 -> ControlOverviewPage(
             modifier = modifier,
             coreRuntime = coreRuntime,
-            wireless = wireless,
-            rootAvailable = rootAvailable,
-            rootDetail = rootDetail,
             onOpenWirelessGuide = { page = 1 },
             onOpenRootGuide = { page = 2 },
             onStop = { viewModel.stopServerProcess() },
-            onRefreshState = { viewModel.refreshCoreRuntimeStatusNow() }
+            onRefreshState = { viewModel.refreshCoreRuntimeStatusNow() },
+            onOpenConfig = onOpenConfig
         )
         1 -> SingleConfigPage(
             title = tr("Wireless ADB startup"),
@@ -327,107 +379,668 @@ fun ControlTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 private fun ControlOverviewPage(
     modifier: Modifier = Modifier,
     coreRuntime: CoreRuntimeStatus,
-    wireless: WirelessBootstrapStatus,
-    rootAvailable: Boolean,
-    rootDetail: String,
     onOpenWirelessGuide: () -> Unit,
     onOpenRootGuide: () -> Unit,
     onStop: () -> Unit,
-    onRefreshState: () -> Unit
+    onRefreshState: () -> Unit,
+    onOpenConfig: () -> Unit
 ) {
     val scrollState = rememberScrollState()
-    val wirelessUi = resolveWirelessGuideUiState(wireless)
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        ProcessRuntimeCard(status = coreRuntime)
-        Card(modifier = Modifier.fillMaxWidth()) {
+        if (coreRuntime.ready) {
+            CompactCoreStatusPanel(
+                detail = coreRuntime.detail,
+                onStop = onStop,
+                onRefreshState = onRefreshState
+            )
+        } else {
+            CompactStartupPanel(
+                onOpenWirelessGuide = onOpenWirelessGuide,
+                onOpenRootGuide = onOpenRootGuide
+            )
+        }
+
+        InlineInfoStrip(
+            glyph = "⚙",
+            accentColor = MaterialTheme.colorScheme.primary,
+            title = tr("First-time setup"),
+            detail = tr("Before your first task, complete the model configuration once. After that, you can come back here and start core directly."),
+            actionLabel = tr("Open model config"),
+            onAction = onOpenConfig
+        )
+
+        SurfacePanel(
+            modifier = Modifier.fillMaxWidth(),
+            background = MaterialTheme.colorScheme.surface,
+            borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.62f)
+        ) {
             Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Text(tr("Choose startup method"), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    tr("Pick the method that matches your phone. Detailed steps are inside each page."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
-                    fontSize = 12.sp
+                SheetHeader(
+                    title = tr("What you can do next"),
+                    subtitle = tr("The app is built for direct tasks, timed automation, and notification-triggered automation.")
+                )
+                FeatureBullet(
+                    title = tr("Direct task"),
+                    detail = tr("Type a requirement and let the phone complete it for you."),
+                    glyph = "⌨"
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.24f))
+                FeatureBullet(
+                    title = tr("Scheduled task"),
+                    detail = tr("Run the same task later or on a recurring schedule."),
+                    glyph = "⏰"
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.24f))
+                FeatureBullet(
+                    title = tr("Notification trigger"),
+                    detail = tr("Listen to one app's notifications and fire a task automatically."),
+                    glyph = "✉"
                 )
             }
         }
-        StartupMethodCard(
-            title = tr("Wireless ADB startup"),
-            description = tr("Recommended for most phones without root."),
-            statusTitle = tr(wirelessUi.headline),
-            statusDetail = wirelessUi.detail,
-            accentColor = wirelessUi.accentColor,
-            buttonText = tr("Open guide"),
-            onClick = onOpenWirelessGuide
-        )
-        StartupMethodCard(
-            title = tr("Root startup"),
-            description = tr("For rooted phones. Starts lxb-core directly with su."),
-            statusTitle = if (rootAvailable) tr("Root available") else tr("Root unavailable"),
-            statusDetail = rootDetail,
-            accentColor = if (rootAvailable) Color(0xFF2E7D32) else Color(0xFFE65100),
-            buttonText = tr("Open root page"),
-            onClick = onOpenRootGuide
-        )
-        UnifiedStopCard(
-            onStop = onStop,
-            onRefreshState = onRefreshState
+    }
+}
+
+@Composable
+private fun ProductSectionLabel(
+    title: String,
+    subtitle: String? = null
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        if (!subtitle.isNullOrBlank()) {
+            Text(
+                text = subtitle,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProductSectionCard(
+    title: String,
+    subtitle: String? = null,
+    glyph: String = "•",
+    content: @Composable () -> Unit
+) {
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.62f)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                GlyphBadge(
+                    glyph = glyph,
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    size = 36.dp
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ProductSectionLabel(title = title, subtitle = subtitle)
+                    content()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeatureBullet(title: String, detail: String, glyph: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        GlyphBadge(glyph = glyph, accentColor = MaterialTheme.colorScheme.primary, size = 34.dp)
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = detail,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProductEntryCard(
+    title: String,
+    description: String,
+    meta: String,
+    glyph: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    SurfacePanel(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                GlyphBadge(glyph = glyph, accentColor = MaterialTheme.colorScheme.primary)
+                StatusTag(text = meta, accentColor = MaterialTheme.colorScheme.primary)
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = description,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = tr("Tap to open"),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                )
+                Text(
+                    text = "${tr("Open")} ›",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SurfacePanel(
+    modifier: Modifier = Modifier,
+    background: Color,
+    borderColor: Color,
+    shape: Shape = RoundedCornerShape(24.dp),
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = modifier,
+        shape = shape,
+        colors = CardDefaults.cardColors(containerColor = background),
+        border = BorderStroke(1.dp, borderColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun PageActionButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedButton(
+        onClick = onClick,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+        modifier = modifier.height(32.dp)
+    ) {
+        Text(text, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun PageHeaderBlock(
+    title: String,
+    subtitle: String,
+    glyph: String,
+    onBack: (() -> Unit)? = null,
+    primaryActionLabel: String? = null,
+    onPrimaryAction: (() -> Unit)? = null,
+    secondaryActionLabel: String? = null,
+    onSecondaryAction: (() -> Unit)? = null
+) {
+    val hasPrimaryAction = !primaryActionLabel.isNullOrBlank() && onPrimaryAction != null
+    val hasSecondaryAction = !secondaryActionLabel.isNullOrBlank() && onSecondaryAction != null
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            if (onBack != null) {
+                PageActionButton(text = tr("Back"), onClick = onBack)
+            }
+            GlyphBadge(
+                glyph = glyph,
+                accentColor = MaterialTheme.colorScheme.primary,
+                size = 34.dp
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = subtitle,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f)
+                )
+            }
+        }
+        if (hasPrimaryAction || hasSecondaryAction) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = if (hasPrimaryAction && hasSecondaryAction) Arrangement.spacedBy(8.dp) else Arrangement.End
+            ) {
+                if (hasPrimaryAction) {
+                    PageActionButton(
+                        text = primaryActionLabel!!,
+                        onClick = onPrimaryAction!!,
+                        modifier = if (hasSecondaryAction) Modifier.weight(1f) else Modifier
+                    )
+                }
+                if (hasSecondaryAction) {
+                    PageActionButton(
+                        text = secondaryActionLabel!!,
+                        onClick = onSecondaryAction!!,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SummaryInfoStrip(
+    glyph: String,
+    title: String,
+    primaryMetric: String,
+    secondaryMetric: String,
+    accentColor: Color = MaterialTheme.colorScheme.primary
+) {
+    val stripBackground = accentColor.copy(alpha = 0.10f).compositeOver(MaterialTheme.colorScheme.surface)
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = stripBackground,
+        borderColor = accentColor.copy(alpha = 0.24f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            GlyphBadge(glyph = glyph, accentColor = accentColor, size = 32.dp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(title, style = MaterialTheme.typography.labelLarge)
+                Text(
+                    text = primaryMetric,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f)
+                )
+            }
+            StatusTag(text = secondaryMetric, accentColor = accentColor)
+        }
+    }
+}
+
+@Composable
+private fun GlyphBadge(
+    glyph: String,
+    accentColor: Color,
+    size: androidx.compose.ui.unit.Dp = 40.dp
+) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(accentColor.copy(alpha = 0.12f))
+            .border(BorderStroke(1.dp, accentColor.copy(alpha = 0.18f)), CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = glyph,
+            color = accentColor,
+            fontSize = 16.sp
         )
     }
 }
 
 @Composable
-private fun StartupMethodCard(
+private fun EmptyStateBox(title: String, detail: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        GlyphBadge(glyph = "○", accentColor = MaterialTheme.colorScheme.primary, size = 44.dp)
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = detail,
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+        )
+    }
+}
+
+@Composable
+private fun StatusTag(text: String, accentColor: Color) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = accentColor.copy(alpha = 0.14f).compositeOver(MaterialTheme.colorScheme.surface)
+        ),
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.24f))
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            color = accentColor,
+            fontSize = 10.sp
+        )
+    }
+}
+
+@Composable
+private fun PrimaryActionTile(
+    modifier: Modifier = Modifier,
     title: String,
-    description: String,
-    statusTitle: String,
-    statusDetail: String,
+    subtitle: String,
+    glyph: String,
     accentColor: Color,
-    buttonText: String,
     onClick: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        onClick = onClick
+    val tileBackground = accentColor.copy(alpha = 0.08f).compositeOver(MaterialTheme.colorScheme.surface)
+    SurfacePanel(
+        modifier = modifier.clickable(onClick = onClick),
+        background = tileBackground,
+        borderColor = accentColor.copy(alpha = 0.28f),
+        shape = RoundedCornerShape(24.dp)
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier
+                .height(132.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(
-                description,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.74f),
-                fontSize = 12.sp
-            )
-            Card(colors = CardDefaults.cardColors(containerColor = accentColor.copy(alpha = 0.12f))) {
-                Column(
-                    modifier = Modifier.padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+            GlyphBadge(glyph = glyph, accentColor = accentColor)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = subtitle,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InlineInfoStrip(
+    glyph: String,
+    accentColor: Color,
+    title: String,
+    detail: String,
+    actionLabel: String,
+    onAction: () -> Unit
+) {
+    val stripBackground = accentColor.copy(alpha = 0.10f).compositeOver(MaterialTheme.colorScheme.surface)
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = stripBackground,
+        borderColor = accentColor.copy(alpha = 0.24f),
+        shape = RoundedCornerShape(26.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            GlyphBadge(glyph = glyph, accentColor = accentColor, size = 40.dp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = detail,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                )
+            }
+            OutlinedButton(
+                onClick = onAction,
+                border = BorderStroke(1.dp, accentColor.copy(alpha = 0.28f))
+            ) {
+                Text(actionLabel)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactCoreStatusPanel(
+    detail: String,
+    onStop: () -> Unit,
+    onRefreshState: () -> Unit
+) {
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    GlyphBadge(glyph = "✓", accentColor = AppSuccess, size = 34.dp)
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(tr("LXB Core is running"), style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = tr("Core is ready"),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f)
+                        )
+                    }
+                }
+                StatusTag(text = tr("Core Connected"), accentColor = AppSuccess)
+            }
+            Text(
+                text = detail,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.76f)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onStop,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppError)
+                ) {
+                    Text(tr("Stop Core"))
+                }
+                OutlinedButton(
+                    onClick = onRefreshState,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("Refresh status"))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactStartupPanel(
+    onOpenWirelessGuide: () -> Unit,
+    onOpenRootGuide: () -> Unit
+) {
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                GlyphBadge(glyph = "⚡", accentColor = MaterialTheme.colorScheme.primary, size = 34.dp)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(tr("Start LXB Core in one tap"), style = MaterialTheme.typography.titleSmall)
                     Text(
-                        text = statusTitle,
-                        color = accentColor,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Text(
-                        text = statusDetail,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
-                        fontSize = 12.sp
+                        text = tr("Choose the startup method that matches your phone. Root is the shortest path, and Wireless ADB is the easiest path for most phones."),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f)
                     )
                 }
             }
-            Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-                Text(buttonText)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                PrimaryActionTile(
+                    modifier = Modifier.weight(1f),
+                    title = tr("ADB start"),
+                    subtitle = tr("Recommended for most phones"),
+                    glyph = "⌁",
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    onClick = onOpenWirelessGuide
+                )
+                PrimaryActionTile(
+                    modifier = Modifier.weight(1f),
+                    title = tr("Root start"),
+                    subtitle = tr("For rooted phones"),
+                    glyph = "#",
+                    accentColor = MaterialTheme.colorScheme.tertiary,
+                    onClick = onOpenRootGuide
+                )
             }
+            Text(
+                text = tr("Detailed steps stay inside each startup page."),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompactGuideStatusPanel(
+    eyebrow: String,
+    title: String,
+    detail: String,
+    accentColor: Color,
+    glyph: String,
+    statusText: String
+) {
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    GlyphBadge(glyph = glyph, accentColor = accentColor, size = 34.dp)
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(title, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = eyebrow,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f)
+                        )
+                    }
+                }
+                StatusTag(text = statusText, accentColor = accentColor)
+            }
+            Text(
+                text = detail,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.76f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SheetHeader(
+    title: String,
+    subtitle: String? = null
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        if (!subtitle.isNullOrBlank()) {
+            Text(
+                text = subtitle,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f)
+            )
         }
     }
 }
@@ -444,43 +1057,30 @@ private fun WirelessGuidePage(
     val ui = resolveWirelessGuideUiState(status)
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Card(
+        CompactGuideStatusPanel(
+            eyebrow = tr("Recommended for most phones"),
+            title = tr("Wireless ADB startup"),
+            detail = ui.detail,
+            accentColor = ui.accentColor,
+            glyph = "⌁",
+            statusText = tr(ui.headline)
+        )
+
+        SurfacePanel(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = ui.accentColor.copy(alpha = 0.12f))
+            background = MaterialTheme.colorScheme.surface,
+            borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
         ) {
             Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Text(tr("This is the easiest path for most users."), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    tr("The app will open Developer Options, then wait for you to enter the 6-digit pairing code from the notification."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
-                    fontSize = 12.sp
+                SheetHeader(
+                    title = tr("Follow these steps"),
+                    subtitle = tr("Stay on this page while you complete the steps on your phone.")
                 )
-            }
-        }
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(tr(ui.headline), style = MaterialTheme.typography.titleSmall, color = ui.accentColor)
-                Text(
-                    ui.detail,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
-                    fontSize = 12.sp
-                )
-            }
-        }
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(tr("What to do"), style = MaterialTheme.typography.titleSmall)
                 GuideStepRow(
                     number = 1,
                     title = tr("Turn on Developer Options"),
@@ -511,43 +1111,67 @@ private fun WirelessGuidePage(
                 )
             }
         }
-        Card(modifier = Modifier.fillMaxWidth()) {
+
+        SurfacePanel(
+            modifier = Modifier.fillMaxWidth(),
+            background = MaterialTheme.colorScheme.primaryContainer,
+            borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+        ) {
             Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(tr("Actions"), style = MaterialTheme.typography.titleSmall)
+                SheetHeader(
+                    title = tr("Actions"),
+                    subtitle = tr("Use the first button for first-time setup. If you already paired before, you can try starting directly.")
+                )
                 Button(onClick = onStartGuide, modifier = Modifier.fillMaxWidth()) {
                     Text(tr("Open Developer Options (Start Guide)"))
                 }
-                OutlinedButton(
-                    onClick = onStartDirect,
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = wirelessDebuggingEnabled
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(tr("I already paired before, start directly"))
+                    OutlinedButton(
+                        onClick = onStartDirect,
+                        modifier = Modifier.weight(1f),
+                        enabled = wirelessDebuggingEnabled
+                    ) {
+                        Text(tr("I already paired before, start directly"))
+                    }
+                    OutlinedButton(
+                        onClick = onRefreshState,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(tr("Refresh connection state"))
+                    }
                 }
                 if (!wirelessDebuggingEnabled) {
                     Text(
                         tr("Please make sure Wireless debugging is turned on first."),
-                        color = Color(0xFFE65100),
+                        color = AppWarning,
                         fontSize = 12.sp
                     )
                     OutlinedButton(onClick = onOpenWirelessDebugging, modifier = Modifier.fillMaxWidth()) {
                         Text(tr("Open Wireless debugging settings"))
                     }
                 }
-                OutlinedButton(onClick = onRefreshState, modifier = Modifier.fillMaxWidth()) {
-                    Text(tr("Refresh connection state"))
-                }
             }
         }
-        Card(modifier = Modifier.fillMaxWidth()) {
+
+        SurfacePanel(
+            modifier = Modifier.fillMaxWidth(),
+            background = MaterialTheme.colorScheme.surface,
+            borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f)
+        ) {
             Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(tr("Need help?"), style = MaterialTheme.typography.titleSmall)
+                SheetHeader(
+                    title = tr("Need help?"),
+                    subtitle = tr("These are the most common ROM-specific requirements before startup can succeed.")
+                )
                 Text(
                     tr("- USB debugging must be enabled, otherwise process keepalive may fail."),
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
@@ -570,7 +1194,7 @@ private fun WirelessGuidePage(
                 )
                 Text(
                     tr("Reference: ROM-specific notes above are adapted from Shizuku docs."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                     fontSize = 11.sp
                 )
             }
@@ -586,36 +1210,50 @@ private fun GuideStepRow(
     active: Boolean,
     done: Boolean
 ) {
-    val bg = when {
-        done -> Color(0xFF2E7D32).copy(alpha = 0.10f)
-        active -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+    val accent = when {
+        done -> AppSuccess
+        active -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f)
+    }
+    val background = when {
+        done -> AppSuccessSoft
+        active -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
-    val fg = when {
-        done -> Color(0xFF2E7D32)
-        active -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f)
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(bg, shape = MaterialTheme.shapes.medium)
-            .padding(10.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.Top
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = background,
+        borderColor = accent.copy(alpha = 0.18f),
+        shape = RoundedCornerShape(20.dp)
     ) {
-        Text(
-            text = number.toString(),
-            color = fg,
-            style = MaterialTheme.typography.titleSmall
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, color = fg, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                detail,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
-                fontSize = 12.sp
-            )
+        Row(
+            modifier = Modifier.padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            GlyphBadge(glyph = number.toString(), accentColor = accent, size = 34.dp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(title, color = accent, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    if (done) {
+                        StatusTag(text = tr("Done"), accentColor = AppSuccess)
+                    } else if (active) {
+                        StatusTag(text = tr("Current status"), accentColor = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Text(
+                    detail,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                    fontSize = 12.sp
+                )
+            }
         }
     }
 }
@@ -629,50 +1267,62 @@ private fun RootStartGuidePage(
     onRefreshRoot: () -> Unit,
     onRefreshState: () -> Unit
 ) {
+    val accent = if (rootAvailable) AppSuccess else AppWarning
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Card(
+        CompactGuideStatusPanel(
+            eyebrow = tr("For rooted phones"),
+            title = tr("Root startup"),
+            detail = rootDetail,
+            accentColor = accent,
+            glyph = "#",
+            statusText = if (rootAvailable) tr("Root available") else tr("Root unavailable")
+        )
+
+        SurfacePanel(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF2E7D32).copy(alpha = 0.10f))
+            background = if (coreRuntime.ready) AppSuccessSoft else AppWarningSoft,
+            borderColor = (if (coreRuntime.ready) AppSuccess else AppWarning).copy(alpha = 0.20f)
+        ) {
+            Row(
+                modifier = Modifier.padding(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                GlyphBadge(
+                    glyph = if (coreRuntime.ready) "✓" else "!",
+                    accentColor = if (coreRuntime.ready) AppSuccess else AppWarning,
+                    size = 32.dp
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = "${tr("State")}: ${if (coreRuntime.ready) tr("Core Connected") else tr("Core Disconnected")}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = if (coreRuntime.ready) tr("LXB Core is running") else tr("Get started"),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.70f)
+                    )
+                }
+            }
+        }
+
+        SurfacePanel(
+            modifier = Modifier.fillMaxWidth(),
+            background = MaterialTheme.colorScheme.surface,
+            borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
         ) {
             Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(tr("Root startup"), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    tr("For rooted phones. Starts lxb-core directly with su."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
-                    fontSize = 12.sp
+                SheetHeader(
+                    title = tr("Before you start"),
+                    subtitle = tr("Root startup is shorter, but it still depends on root permission being granted in time.")
                 )
-            }
-        }
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = if (rootAvailable) tr("Root available") else tr("Root unavailable"),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = if (rootAvailable) Color(0xFF2E7D32) else Color(0xFFE65100)
-                )
-                Text(rootDetail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f))
-                Text(
-                    "${tr("State")}: ${if (coreRuntime.ready) tr("Core Connected") else tr("Core Disconnected")}",
-                    fontSize = 12.sp,
-                    color = if (coreRuntime.ready) Color(0xFF2E7D32) else Color(0xFFE65100)
-                )
-            }
-        }
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(tr("Before you start"), style = MaterialTheme.typography.titleSmall)
                 Text(
                     tr("Requires root permission grant in superuser manager."),
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
@@ -690,12 +1340,20 @@ private fun RootStartGuidePage(
                 )
             }
         }
-        Card(modifier = Modifier.fillMaxWidth()) {
+
+        SurfacePanel(
+            modifier = Modifier.fillMaxWidth(),
+            background = if (rootAvailable) AppSuccessSoft else AppWarningSoft,
+            borderColor = accent.copy(alpha = 0.20f)
+        ) {
             Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(tr("Actions"), style = MaterialTheme.typography.titleSmall)
+                SheetHeader(
+                    title = tr("Actions"),
+                    subtitle = tr("Use root startup only after you confirm root is available on this phone.")
+                )
                 Button(
                     onClick = onStartRoot,
                     modifier = Modifier.fillMaxWidth(),
@@ -703,11 +1361,16 @@ private fun RootStartGuidePage(
                 ) {
                     Text(tr("Start via Root"))
                 }
-                OutlinedButton(onClick = onRefreshRoot, modifier = Modifier.fillMaxWidth()) {
-                    Text(tr("Check Root"))
-                }
-                OutlinedButton(onClick = onRefreshState, modifier = Modifier.fillMaxWidth()) {
-                    Text(tr("Refresh connection state"))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(onClick = onRefreshRoot, modifier = Modifier.weight(1f)) {
+                        Text(tr("Check Root"))
+                    }
+                    OutlinedButton(onClick = onRefreshState, modifier = Modifier.weight(1f)) {
+                        Text(tr("Refresh connection state"))
+                    }
                 }
             }
         }
@@ -726,30 +1389,53 @@ fun TaskSessionCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         }
     }
 
-    Card(
-        modifier = modifier.fillMaxWidth()
+    SurfacePanel(
+        modifier = modifier.fillMaxWidth(),
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.62f),
+        shape = RoundedCornerShape(28.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text(tr("Task Session"), style = MaterialTheme.typography.titleSmall)
-            LazyColumn(
-                state = listState,
+            SurfacePanel(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(220.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                    .height(200.dp),
+                background = MaterialTheme.colorScheme.surfaceVariant,
+                borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.20f),
+                shape = RoundedCornerShape(22.dp)
             ) {
-                items(chatMessages) { msg ->
-                    ChatBubble(message = msg)
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (chatMessages.isEmpty()) {
+                        item {
+                            Text(
+                                text = tr("Your recent task conversation will appear here after you run a task."),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                            )
+                        }
+                    } else {
+                        items(chatMessages) { msg ->
+                            ChatBubble(message = msg)
+                        }
+                    }
                 }
             }
+
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Bottom
             ) {
                 OutlinedTextField(
                     value = requirement,
@@ -759,23 +1445,13 @@ fun TaskSessionCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     maxLines = 3
                 )
                 Column(
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
                         onClick = { viewModel.runRequirementOnDevice() },
-                        modifier = Modifier.height(40.dp)
+                        modifier = Modifier.height(46.dp)
                     ) {
                         Text(tr("Run"))
-                    }
-                    OutlinedButton(
-                        onClick = { viewModel.cancelCurrentTaskOnDevice() },
-                        modifier = Modifier.height(32.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                            horizontal = 8.dp,
-                            vertical = 4.dp
-                        )
-                    ) {
-                        Text(tr("Stop"), fontSize = 12.sp)
                     }
                 }
             }
@@ -784,51 +1460,73 @@ fun TaskSessionCard(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun TaskRuntimeStatusCard(status: TaskRuntimeUiStatus, modifier: Modifier = Modifier) {
-    val bgColor = if (status.running) Color(0xFF4CAF50) else Color(0xFF9E9E9E)
-    val stateText = if (status.running) tr("RUNNING") else tr("IDLE")
-    Card(
+fun TaskRuntimeStatusCard(
+    status: TaskRuntimeUiStatus,
+    modifier: Modifier = Modifier,
+    onStop: (() -> Unit)? = null
+) {
+    val accentColor = if (status.running) AppSuccess else MaterialTheme.colorScheme.primary
+    val background = if (status.running) AppSuccessSoft else MaterialTheme.colorScheme.surfaceVariant
+    SurfacePanel(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = bgColor)
+        background = background,
+        borderColor = accentColor.copy(alpha = 0.18f),
+        shape = RoundedCornerShape(24.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    tr("Task Runtime"),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = Color.White
-                )
-                Text(stateText, color = Color.White, fontSize = 12.sp)
-            }
-            val taskText = if (status.taskId.isNotEmpty()) {
-                "${tr("Current task")}: ${status.taskId.take(8)}..."
-            } else {
-                "${tr("Current task")}: -"
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    GlyphBadge(
+                        glyph = if (status.running) "▶" else "○",
+                        accentColor = accentColor,
+                        size = 34.dp
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(tr("Task Runtime"), style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = if (status.running) tr("A task is currently running on the phone.") else tr("No task is running right now."),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                        )
+                    }
+                }
+                StatusTag(text = if (status.running) tr("RUNNING") else tr("IDLE"), accentColor = accentColor)
             }
             Text(
-                text = taskText,
+                text = "${tr("Current task")}: ${if (status.taskId.isNotEmpty()) status.taskId.take(8) + "..." else "-"}",
                 fontSize = 12.sp,
-                color = Color.White.copy(alpha = 0.92f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f)
             )
             Text(
                 text = "${tr("Phase")}: ${status.phase}",
                 fontSize = 12.sp,
-                color = Color.White.copy(alpha = 0.92f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f)
             )
-            val detail = if (status.running) status.detail else tr("No task is running.")
             Text(
-                text = detail,
+                text = if (status.running) status.detail else tr("No task is running."),
                 fontSize = 12.sp,
-                color = Color.White.copy(alpha = 0.88f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f)
             )
+            if (status.running && onStop != null) {
+                OutlinedButton(
+                    onClick = onStop,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(tr("Stop"))
+                }
+            }
         }
     }
 }
@@ -854,6 +1552,12 @@ private val ZhMap = mapOf(
     "Config" to "配置",
     "Logs" to "日志",
     "Core Trace" to "Core 追踪",
+    "Inspect live core traces, open structured details, and export the full trace when you need to debug." to "查看实时 Core 追踪、打开结构化详情，并在排查问题时导出完整追踪。",
+    "Trace stream" to "追踪流",
+    "Exported" to "已导出",
+    "Scroll for older" to "上滑加载更早记录",
+    "Live" to "实时",
+    "Latest traces stay at the bottom. Scroll upward to load older ones." to "最新追踪会停留在底部，向上滚动即可加载更早记录。",
     "Export" to "导出",
     "Exporting..." to "导出中...",
     "Exporting trace..." to "正在导出追踪...",
@@ -891,6 +1595,9 @@ private val ZhMap = mapOf(
     "Schedules" to "定时任务",
     "Notification Triggers" to "通知触发任务",
     "Recent Runs" to "最近执行",
+    "Schedule overview" to "定时任务概览",
+    "Trigger overview" to "通知规则概览",
+    "Run history" to "执行记录概览",
     "No schedules yet." to "暂无定时任务。",
     "Edit Schedule" to "编辑定时任务",
     "Create Schedule" to "新建定时任务",
@@ -961,19 +1668,79 @@ private val ZhMap = mapOf(
     "New" to "新建",
     "Refresh" to "刷新",
     "Task Details" to "任务详情",
+    "Task route detail" to "任务路线详情",
+    "Task route key" to "任务路线键",
     "No task summary available yet." to "暂时没有任务摘要。",
+    "Loading task route details..." to "正在加载任务路线详情...",
     "Task ID" to "任务 ID",
     "Timestamp" to "时间",
     "Task" to "任务",
     "Reason" to "原因",
     "Target page" to "目标页面",
     "Source" to "来源",
+    "Source ID" to "来源 ID",
     "Schedule ID" to "定时任务 ID",
     "Memory applied" to "已应用记忆",
     "Record enabled" to "已开启录屏",
     "Record file" to "录屏文件",
     "Created at" to "创建时间",
     "Finished at" to "结束时间",
+    "Saved task route" to "已保存任务路线",
+    "Latest success trace" to "最近成功轨迹",
+    "Latest attempt trace" to "最近尝试轨迹",
+    "Delete task route" to "删除任务路线",
+    "Task Route Editor" to "任务路线编辑",
+    "Open task route editor" to "打开任务路线编辑页",
+    "Task route editing is available after the task config has been saved once." to "任务配置至少保存一次后，才能编辑对应的任务路线。",
+    "No task route data yet." to "暂时还没有任务路线数据。",
+    "Tap a card to view full details." to "点击卡片查看完整详情。",
+    "Review the captured path, delete noisy actions, and save only the useful route." to "查看已记录路径，删除噪声动作，只保留有用路线。",
+    "Summary" to "摘要",
+    "Task route target" to "任务路线目标",
+    "Refresh detail" to "刷新详情",
+    "Saved Route" to "已保存路线",
+    "No saved route yet." to "暂时还没有已保存路线。",
+    "Latest Success Trace" to "最近成功轨迹",
+    "Latest Attempt Trace" to "最近尝试轨迹",
+    "No latest success trace yet." to "暂时还没有最近成功轨迹。",
+    "No latest attempt trace yet." to "暂时还没有最近尝试轨迹。",
+    "Task description" to "任务描述",
+    "Root task" to "根任务",
+    "Created from task" to "来源任务",
+    "Last replay status" to "最近回放状态",
+    "Segment" to "片段",
+    "Segment ID" to "片段 ID",
+    "Sub-task ID" to "子任务 ID",
+    "Sub-task index" to "子任务序号",
+    "Success criteria" to "成功条件",
+    "Inputs" to "输入",
+    "Outputs" to "输出",
+    "Step" to "步骤",
+    "Step ID" to "步骤 ID",
+    "Source action ID" to "来源动作 ID",
+    "Action" to "动作",
+    "Action ID" to "动作 ID",
+    "Operation" to "操作",
+    "Arguments" to "参数",
+    "Fallback point" to "兜底坐标",
+    "Semantic note" to "语义备注",
+    "Expected result" to "预期结果",
+    "Locator" to "定位器",
+    "Vision fields" to "视觉字段",
+    "Turn" to "轮次",
+    "Command" to "指令",
+    "Page semantics" to "页面语义",
+    "Execution result" to "执行结果",
+    "Execution error" to "执行错误",
+    "Selected deletions" to "已选删除项",
+    "Delete from saved route" to "从已保存路线中删除",
+    "Save manual route" to "手动保存路线",
+    "Saving..." to "保存中...",
+    "Finish after replay" to "回放后直接完成任务",
+    "If enabled, a successful task-route replay skips VISION_ACT and finishes the current sub-task directly." to "开启后，任务路线回放成功会跳过 VISION_ACT，直接完成当前子任务。",
+    "No trace actions yet." to "暂时还没有轨迹动作。",
+    "App label" to "应用名称",
+    "Final state" to "最终状态",
     "Next run" to "下次运行",
     "Triggered count" to "触发次数",
     "Record" to "录屏",
@@ -981,7 +1748,6 @@ private val ZhMap = mapOf(
     "Time window" to "生效时段",
     "Package list" to "包名列表",
     "Priority" to "优先级",
-    "Enabled" to "启用",
     "ID" to "ID",
     "Yes" to "是",
     "No" to "否",
@@ -1086,6 +1852,16 @@ private val ZhMap = mapOf(
     "Start" to "启动",
     "Config center" to "配置中心",
     "Choose a category to configure. Each section opens a dedicated settings page." to "选择一个配置类别，每个类别会进入独立配置页面。",
+    "Current setup" to "当前设置概览",
+    "Recommended first" to "建议先配这些",
+    "Most people only need model and control settings before starting tasks." to "大多数人开始用之前，只需要先配模型和操控方式。",
+    "If taps, swipes, or typing are not behaving well on your phone, adjust them here." to "如果点击、滑动或输入在你的手机上表现不好，就来这里调整。",
+    "Ready" to "已就绪",
+    "Needs sync" to "待同步",
+    "Device behavior" to "设备行为",
+    "Language, unlock, and other phone-side behavior live here." to "语言、解锁以及其他手机侧行为都在这里。",
+    "Map routing" to "地图路由",
+    "Route asset source, sync, and identifier pull controls." to "路线资产来源、同步以及按标识拉取，都在这里管理。",
     "Language" to "语言",
     "Language for app UI text." to "应用界面语言设置。",
     "English" to "英文",
@@ -1110,6 +1886,9 @@ private val ZhMap = mapOf(
     "Current app version" to "当前应用版本",
     "Check latest release" to "检查最新版本",
     "Open releases" to "打开 Releases",
+    "Open" to "打开",
+    "Tap to open" to "点击进入",
+    "Done" to "完成",
     "Endpoint is auto-completed to /chat/completions." to "会自动补齐为 /chat/completions 端点。",
     "Resolved request URL" to "真实调用 URL",
     "Input API Base URL to preview request endpoint." to "输入 API Base URL 后，这里会实时显示最终请求地址。",
@@ -1118,11 +1897,24 @@ private val ZhMap = mapOf(
     "TCP port listened by lxb-core on device (default 12345)" to "设备端 lxb-core 监听的 TCP 端口（默认 12345）",
     "Controls native start endpoint and click/swipe compatibility path." to "配置原生启动端点与点击/滑动兼容路径。",
     "Configure touch injection mode and compatibility." to "配置触摸注入模式与兼容策略。",
+    "Choose how touch, typing, and task-time phone behavior should work on this device." to "选择这个设备上的触控、输入以及任务期间手机行为应如何工作。",
+    "Set the model endpoint used for device-side planning and visual understanding." to "配置设备侧用于规划与视觉理解的模型端点。",
+    "Control how the phone is unlocked before a task and locked again afterward." to "控制任务开始前如何解锁，以及结束后如何重新锁屏。",
+    "Manage route assets, active map lane, and pull-by-identifier actions." to "管理路线资产、当前地图轨道以及按标识拉取相关操作。",
+    "Device control" to "设备操控",
+    "Connection" to "连接",
+    "Device-side core connection settings." to "设备侧 Core 连接相关设置。",
+    "Touch input mode" to "触摸注入模式",
+    "Choose the injection strategy used for taps and swipes." to "选择点击与滑动所使用的注入策略。",
+    "ADB Keyboard is recommended because it gives the most reliable input experience." to "推荐使用 ADB Keyboard，因为它通常能提供最稳定的输入体验。",
+    "Task-time Do Not Disturb" to "任务期间免打扰",
+    "Choose what happens to DND automatically when a task begins." to "选择任务开始时要自动如何处理免打扰。",
+    "Apply changes" to "应用更改",
+    "Push the current control configuration to core now, or only save it locally." to "现在就把当前操控配置推送到 Core，或者只保存在本地。",
     "Touch mode profile" to "触摸策略档位",
     "Choose preferred injection pipeline for tap/swipe/long press." to "为点击/滑动/长按选择优先注入链路。",
     "Compatibility mode (Shell first)" to "兼容模式（Shell 优先）",
     "Precision mode (UiAutomation first)" to "精细模式（UiAutomation 优先）",
-    "Task-time Do Not Disturb" to "任务期间免打扰",
     "Policy applied when a task starts." to "任务启动时应用此策略。",
     "Keep current DND state" to "不调整免打扰（保持当前状态）",
     "Set DND to OFF (allow notifications)" to "设置任务期 DND=OFF（允许提醒）",
@@ -1134,7 +1926,6 @@ private val ZhMap = mapOf(
     "regex" to "正则",
     "any" to "任意",
     "UIAutomator" to "UIAutomator",
-    "Touch input mode" to "触摸注入模式",
     "How taps/swipes are injected to the device." to "控制点击/滑动如何注入到设备。",
     "Text input mode" to "文字输入方式",
     "Recommended: install ADB Keyboard. If detected, core will switch to it only while typing, then restore your original keyboard automatically." to "推荐安装 ADB Keyboard。检测到后，core 会只在输入文字时临时切换到它，输入完再自动切回你原来的输入法。",
@@ -1153,6 +1944,11 @@ private val ZhMap = mapOf(
     "API Key" to "API Key",
     "Model" to "模型",
     "Please use a model with image recognition capability." to "请使用具有图像识别能力的模型。",
+    "Model routing" to "模型路由",
+    "No model selected" to "尚未选择模型",
+    "Draft only" to "仅草稿",
+    "Base endpoint, API key, and model used for device-side requests." to "配置设备侧请求所使用的基础端点、API Key 与模型。",
+    "Save reusable model presets locally and switch between them quickly." to "将可复用的模型预设保存到本地，并快速切换。",
     "Test LLM & sync to device" to "测试 LLM 并同步到设备",
     "Save only" to "仅保存",
     "Save all config only" to "仅保存（保存所有配置）",
@@ -1174,12 +1970,29 @@ private val ZhMap = mapOf(
     "Check screen state and unlock before app launch/routing." to "在应用启动/路由前检查屏幕状态并执行解锁。",
     "Auto lock after task" to "任务后自动锁屏",
     "Lock screen when task ends if the FSM unlocked it." to "若由 FSM 解锁，任务结束后自动锁屏。",
+    "Unlock policy" to "解锁策略",
+    "Unlock before route is ON" to "路由前自动解锁：开启",
+    "Unlock before route is OFF" to "路由前自动解锁：关闭",
+    "Auto lock ON" to "自动锁屏：开启",
+    "Auto lock OFF" to "自动锁屏：关闭",
+    "Behavior" to "行为设置",
+    "These switches control whether the phone unlocks before a task and locks after it." to "这些开关控制任务前是否自动解锁，以及任务后是否自动锁屏。",
+    "Lockscreen credentials" to "锁屏凭据",
+    "Only needed when swipe unlock alone is not enough." to "只有上滑解锁不够用时才需要填写。",
+    "Sync the latest unlock settings to device now, or only save them locally." to "现在就把最新解锁设置同步到设备，或者只保存在本地。",
     "Unlock PIN / password" to "解锁 PIN / 密码",
     "Used only when swipe unlock is not enough." to "仅在上滑解锁不足时使用。",
     "Sync to device" to "同步到设备",
     "Map sync & lane control" to "地图同步与轨道控制",
     "Map repo raw base URL" to "Map 仓库 Raw Base URL",
     "Use map routing" to "使用 Map 路由",
+    "Use map routing is ON" to "地图路由：开启",
+    "Use map routing is OFF" to "地图路由：关闭",
+    "Source & repository" to "来源与仓库",
+    "Choose where maps come from and which runtime lane stays active." to "选择地图的来源，以及运行时保持生效的轨道。",
+    "Identifier pull" to "按标识拉取",
+    "Pick the app and map identifier used for pull-by-ID and active-map checks." to "选择用于按 ID 拉取和检查当前生效地图的应用与地图标识。",
+    "Sync or pull route assets, inspect the active map, and save the current settings." to "同步或拉取路线资产、查看当前生效地图，并保存当前设置。",
     "ON: route with map when available." to "开启：有地图时优先按地图路由。",
     "OFF: force no-map mode (launch then vision-only)." to "关闭：强制无地图模式（仅启动后视觉执行）。",
     "Map source" to "地图来源",
@@ -1194,7 +2007,88 @@ private val ZhMap = mapOf(
     "Sync Stable All" to "同步全部 Stable",
     "Pull Stable by ID" to "按 ID 拉取 Stable",
     "Pull Candidate by ID" to "按 ID 拉取 Candidate",
-    "Show active" to "查看当前生效"
+    "Show active" to "查看当前生效",
+    "Quick task" to "快速任务",
+    "Describe what you want the phone to do right now. This is the fastest way to try the product." to "描述你现在想让手机做什么。这是体验产品最快的方式。",
+    "Your recent task conversation will appear here after you run a task." to "运行任务后，最近一次任务对话会显示在这里。",
+    "A task is currently running on the phone." to "当前有任务正在手机上执行。",
+    "No task is running right now." to "当前没有正在执行的任务。",
+    "Automation" to "自动化",
+    "Recent results" to "最近结果",
+    "Run a task now, manage automation, or review recent results." to "立即执行任务、管理自动化，或查看最近结果。",
+    "Build repeatable workflows after you are comfortable with direct tasks." to "熟悉直接任务后，再把常用流程做成自动化。",
+    "items" to "项",
+    "Repeat a task later or keep it running on a schedule." to "让同一任务稍后执行，或按计划重复执行。",
+    "Watch one app's notifications and launch a task when a rule matches." to "监听某个应用的通知，并在命中规则时自动执行任务。",
+    "Review what just ran, what failed, and what route data was captured." to "查看刚刚执行了什么、哪里失败了，以及沉淀了哪些路线数据。",
+    "Create one when you want the phone to repeat the same task automatically." to "当你希望手机自动重复执行同一任务时，在这里创建。",
+    "Create one after you know which app and message pattern should trigger the task." to "当你确定要监听哪个应用、哪类消息时，在这里创建。",
+    "Submit a quick task, or wait for a schedule or notification trigger to fire." to "先提交一次快速任务，或等待定时任务或通知触发任务执行。",
+    "Enabled" to "已启用",
+    "Paused" to "已暂停",
+    "App" to "应用",
+    "Listening app" to "监听应用",
+    "Match" to "匹配条件",
+    "Trigger interval" to "触发间隔",
+    "(not set)" to "（未设置）",
+    "Get started" to "开始使用",
+    "Core is ready" to "核心已就绪",
+    "LXB Core is running" to "LXB Core 正在运行",
+    "Start LXB Core in one tap" to "一键启动 LXB Core",
+    "Choose the startup method that matches your phone. Root is the shortest path, and Wireless ADB is the easiest path for most phones." to "选择适合你手机的启动方式。Root 路径最短，Wireless ADB 更适合大多数非 Root 手机。",
+    "Stop Core" to "停止 Core",
+    "Refresh status" to "刷新状态",
+    "First-time setup" to "首次使用准备",
+    "Before your first task, complete the model configuration once. After that, you can come back here and start core directly." to "首次使用前，请先完成一次模型配置。之后就可以回到这里直接启动 core。",
+    "Open model config" to "打开模型配置",
+    "What you can do next" to "接下来你可以做什么",
+    "The app is built for direct tasks, timed automation, and notification-triggered automation." to "这个应用主要支持直接任务、定时自动化和通知触发自动化。",
+    "Direct task" to "直接任务",
+    "Type a requirement and let the phone complete it for you." to "输入一句需求，让手机自己完成操作。",
+    "Open the quick task page when you want to tell the phone what to do right now." to "如果你现在就想告诉手机去做什么，就从这里进入快速任务页。",
+    "Scheduled task" to "定时任务",
+    "Run the same task later or on a recurring schedule." to "让同一个任务稍后执行，或按周期重复执行。",
+    "Notification trigger" to "通知触发任务",
+    "Listen to one app's notifications and fire a task automatically." to "监听某个应用的通知，并自动触发任务。",
+    "Detailed steps stay inside each startup page." to "详细步骤保留在各自的启动页面中。",
+    "Current status" to "当前状态",
+    "Recommended for most phones" to "适合大多数手机",
+    "Follow these steps" to "按下面步骤操作",
+    "Stay on this page while you complete the steps on your phone." to "在手机上完成步骤时，请保持本页面打开。",
+    "Use the first button for first-time setup. If you already paired before, you can try starting directly." to "首次使用请先点第一个按钮。如果之前已经配对过，可以尝试直接启动。",
+    "These are the most common ROM-specific requirements before startup can succeed." to "以下是最常见的 ROM 额外要求，满足后启动更容易成功。",
+    "For rooted phones" to "适用于已 Root 手机",
+    "Root startup is shorter, but it still depends on root permission being granted in time." to "Root 启动路径更短，但仍依赖系统及时授予 root 权限。",
+    "Use root startup only after you confirm root is available on this phone." to "请在确认本机 root 可用后，再使用 root 启动。",
+    "Set what to do, when to run it, and which app it should open." to "设置要做什么、什么时候执行，以及需要先打开哪个应用。",
+    "Basic info" to "基本信息",
+    "Name the rule and describe what the phone should do." to "给规则命名，并描述手机要执行的任务。",
+    "Execution target" to "执行目标",
+    "Choose when the task runs and which app it should open first." to "选择任务的执行时间，以及它应先打开哪个应用。",
+    "Execution preference" to "执行偏好",
+    "These settings affect recording and learned route behavior for this schedule." to "这些设置会影响该定时任务的录屏和路线沉淀行为。",
+    "Save schedule" to "保存定时任务",
+    "Your schedule will appear in the list after it is saved." to "保存后，这条定时任务会出现在列表中。",
+    "Set which notifications to listen for, then define what task should run." to "先设置监听哪些通知，再定义命中后执行什么任务。",
+    "Name the rule and describe the task that should run after a match." to "给规则命名，并描述命中后要执行的任务。",
+    "Trigger conditions" to "触发条件",
+    "The rule checks package first, then title/body matching, then optional LLM condition." to "规则会先检查包名，再检查标题/正文匹配，最后再看可选的 LLM 条件。",
+    "These settings affect route learning and recording after the trigger is matched." to "这些设置会影响规则命中后的路线沉淀和录屏行为。",
+    "Save trigger" to "保存触发规则",
+    "The rule will appear in the notification trigger list after it is saved." to "保存后，这条规则会出现在通知触发任务列表中。",
+    "This page edits the route asset for one exact task only." to "这个页面只编辑某一个精确任务对应的路线资产。",
+    "Replay behavior" to "回放行为",
+    "Choose whether a successful replay should finish the current sub-task immediately." to "选择路线成功回放后，是否直接结束当前子任务。"
+)
+
+private data class RouteEditorTarget(
+    val title: String,
+    val source: String,
+    val sourceId: String,
+    val packageName: String = "",
+    val userTask: String = "",
+    val userPlaybook: String = "",
+    val mode: String = ""
 )
 
 // Tab 2: Tasks
@@ -1202,6 +2096,9 @@ private val ZhMap = mapOf(
 @Composable
 fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val tasks by viewModel.taskList.collectAsState()
+    val taskMapDetail by viewModel.taskMapDetail.collectAsState()
+    val taskMapDetailLoading by viewModel.taskMapDetailLoading.collectAsState()
+    val taskMapSaving by viewModel.taskMapSaving.collectAsState()
     val schedules by viewModel.scheduleList.collectAsState()
     val notifyRules by viewModel.notifyRuleList.collectAsState()
     val installedApps by viewModel.installedAppList.collectAsState()
@@ -1214,6 +2111,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val schedulePackage by viewModel.schedulePackage.collectAsState()
     val schedulePlaybook by viewModel.schedulePlaybook.collectAsState()
     val scheduleRecordEnabled by viewModel.scheduleRecordEnabled.collectAsState()
+    val scheduleTaskMapMode by viewModel.scheduleTaskMapMode.collectAsState()
     val notifyName by viewModel.notifyName.collectAsState()
     val notifyEnabled by viewModel.notifyEnabled.collectAsState()
     val notifyPriority by viewModel.notifyPriority.collectAsState()
@@ -1239,11 +2137,13 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val notifyActionPackage by viewModel.notifyActionPackage.collectAsState()
     val notifyActionUserPlaybook by viewModel.notifyActionUserPlaybook.collectAsState()
     val notifyActionRecordEnabled by viewModel.notifyActionRecordEnabled.collectAsState()
+    val notifyActionTaskMapMode by viewModel.notifyActionTaskMapMode.collectAsState()
     val notifyActionUseMapMode by viewModel.notifyActionUseMapMode.collectAsState()
     var page by rememberSaveable { mutableIntStateOf(0) }
     var editingScheduleId by rememberSaveable { mutableStateOf("") }
     var editingNotifyRuleId by rememberSaveable { mutableStateOf("") }
     var selectedTask by remember { mutableStateOf<TaskSummary?>(null) }
+    var routeEditorTarget by remember { mutableStateOf<RouteEditorTarget?>(null) }
 
     val pageHome = 0
     val pageScheduleList = 1
@@ -1251,12 +2151,23 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val pageRecentRuns = 3
     val pageScheduleForm = 4
     val pageNotifyRuleForm = 5
+    val pageTaskRouteEditor = 6
+    val pageQuickTask = 7
 
     LaunchedEffect(Unit) {
         viewModel.refreshInstalledAppSnapshotOnDevice()
         viewModel.refreshScheduleListOnDevice()
         viewModel.refreshNotifyRuleListOnDevice()
         viewModel.refreshTaskListOnDevice()
+    }
+
+    LaunchedEffect(selectedTask?.taskId, selectedTask?.taskKeyHash) {
+        val task = selectedTask
+        if (task == null) {
+            viewModel.clearTaskMapDetail()
+        } else {
+            viewModel.loadTaskMapDetail(task)
+        }
     }
 
     LaunchedEffect(page) {
@@ -1274,86 +2185,92 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
+                PageHeaderBlock(
+                    title = tr("Tasks"),
+                    subtitle = tr("Run a task now, manage automation, or review recent results."),
+                    glyph = "☰",
+                    primaryActionLabel = tr("Refresh All"),
+                    onPrimaryAction = {
+                        viewModel.refreshInstalledAppSnapshotOnDevice()
+                        viewModel.refreshScheduleListOnDevice()
+                        viewModel.refreshNotifyRuleListOnDevice()
+                        viewModel.refreshTaskListOnDevice()
+                    }
+                )
+
+                TaskRuntimeStatusCard(
+                    status = taskRuntime,
+                    onStop = { viewModel.cancelCurrentTaskOnDevice() }
+                )
+
+                SheetHeader(
+                    title = tr("Direct task"),
+                    subtitle = tr("Open the quick task page when you want to tell the phone what to do right now.")
+                )
+                ProductEntryCard(
+                    title = tr("Quick task"),
+                    description = tr("Describe what you want the phone to do right now. This is the fastest way to try the product."),
+                    meta = tr("Direct task"),
+                    glyph = "⌨",
+                    onClick = { page = pageQuickTask }
+                )
+
+                SheetHeader(
+                    title = tr("Automation"),
+                    subtitle = tr("Build repeatable workflows after you are comfortable with direct tasks.")
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(tr("Task Manager"), style = MaterialTheme.typography.titleSmall)
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.refreshInstalledAppSnapshotOnDevice()
-                            viewModel.refreshScheduleListOnDevice()
-                            viewModel.refreshNotifyRuleListOnDevice()
-                            viewModel.refreshTaskListOnDevice()
-                        },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                            horizontal = 8.dp,
-                            vertical = 4.dp
-                        ),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Refresh All"), fontSize = 12.sp)
-                    }
+                    ProductEntryCard(
+                        title = tr("Schedules"),
+                        description = tr("Manage scheduled tasks and create new ones."),
+                        meta = "${schedules.size} ${tr("items")}",
+                        glyph = "⏰",
+                        onClick = { page = pageScheduleList },
+                        modifier = Modifier.weight(1f)
+                    )
+                    ProductEntryCard(
+                        title = tr("Notification Triggers"),
+                        description = tr("Manage notification-triggered tasks and create new ones."),
+                        meta = "${notifyRules.size} ${tr("items")}",
+                        glyph = "✉",
+                        onClick = { page = pageNotifyRuleList },
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-
-                TaskRuntimeStatusCard(status = taskRuntime)
-                TaskSessionCard(viewModel = viewModel)
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    onClick = { page = pageScheduleList }
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(tr("Schedules"), style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            text = "${tr("Manage scheduled tasks and create new ones.")} (${schedules.size})",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
-                        )
-                    }
-                }
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    onClick = { page = pageNotifyRuleList }
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(tr("Notification Triggers"), style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            text = "${tr("Manage notification-triggered tasks and create new ones.")} (${notifyRules.size})",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
-                        )
-                    }
-                }
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                SheetHeader(
+                    title = tr("Recent results"),
+                    subtitle = tr("Review recent task runs, failures, and learned routes.")
+                )
+                ProductEntryCard(
+                    title = tr("Recent Runs"),
+                    description = tr("View recent execution records."),
+                    meta = "${tasks.size} ${tr("items")}",
+                    glyph = "☰",
                     onClick = { page = pageRecentRuns }
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(tr("Recent Runs"), style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            text = "${tr("View recent execution records.")} (${tasks.size})",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
-                        )
-                    }
-                }
+                )
+            }
+        }
+
+        pageQuickTask -> {
+            Column(
+                modifier = modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                PageHeaderBlock(
+                    title = tr("Quick task"),
+                    subtitle = tr("Describe what you want the phone to do right now. This is the fastest way to try the product."),
+                    glyph = "⌨",
+                    onBack = { page = pageHome }
+                )
+                TaskSessionCard(viewModel = viewModel)
             }
         }
 
@@ -1363,72 +2280,48 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 modifier = modifier
                     .fillMaxSize()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { page = pageHome },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Back"), fontSize = 12.sp)
-                    }
-                    Text(
-                        text = tr("Schedules"),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(top = 6.dp)
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            editingScheduleId = ""
-                            viewModel.resetScheduleForm()
-                            page = pageScheduleForm
-                        },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("New"), fontSize = 12.sp)
-                    }
-                    OutlinedButton(
-                        onClick = { viewModel.refreshScheduleListOnDevice() },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Refresh"), fontSize = 12.sp)
-                    }
-                }
+                PageHeaderBlock(
+                    title = tr("Schedules"),
+                    subtitle = tr("Repeat a task later or keep it running on a schedule."),
+                    glyph = "⏰",
+                    onBack = { page = pageHome },
+                    primaryActionLabel = tr("New"),
+                    onPrimaryAction = {
+                        editingScheduleId = ""
+                        viewModel.resetScheduleForm()
+                        page = pageScheduleForm
+                    },
+                    secondaryActionLabel = tr("Refresh"),
+                    onSecondaryAction = { viewModel.refreshScheduleListOnDevice() }
+                )
 
-                Card(
+                SummaryInfoStrip(
+                    glyph = "⏰",
+                    title = tr("Schedule overview"),
+                    primaryMetric = "${tr("items")}: ${schedules.size}",
+                    secondaryMetric = "${tr("Enabled")}: ${schedules.count { it.enabled }}"
+                )
+
+                SurfacePanel(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
+                        .weight(1f),
+                    background = MaterialTheme.colorScheme.surface,
+                    borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
                 ) {
                     if (schedules.isEmpty()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp)
-                        ) {
-                            Text(
-                                text = tr("No schedules yet."),
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                            )
-                        }
+                        EmptyStateBox(
+                            title = tr("No schedules yet."),
+                            detail = tr("Create one when you want the phone to repeat the same task automatically.")
+                        )
                     } else {
                         LazyColumn(
                             state = scheduleListState,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            modifier = Modifier.fillMaxSize()
                         ) {
-                            items(schedules, key = { it.scheduleId }) { schedule ->
+                            itemsIndexed(schedules, key = { _, it -> it.scheduleId }) { index, schedule ->
                                 ScheduleRow(
                                     schedule = schedule,
                                     onToggleEnabled = { checked ->
@@ -1441,6 +2334,12 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                     },
                                     onDelete = { viewModel.removeScheduleOnDevice(schedule.scheduleId) }
                                 )
+                                if (index < schedules.lastIndex) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 18.dp),
+                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1454,72 +2353,48 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 modifier = modifier
                     .fillMaxSize()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { page = pageHome },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Back"), fontSize = 12.sp)
-                    }
-                    Text(
-                        text = tr("Notification Triggers"),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(top = 6.dp)
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            editingNotifyRuleId = ""
-                            viewModel.resetNotifyRuleForm()
-                            page = pageNotifyRuleForm
-                        },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("New"), fontSize = 12.sp)
-                    }
-                    OutlinedButton(
-                        onClick = { viewModel.refreshNotifyRuleListOnDevice() },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Refresh"), fontSize = 12.sp)
-                    }
-                }
+                PageHeaderBlock(
+                    title = tr("Notification Triggers"),
+                    subtitle = tr("Watch one app's notifications and launch a task when a rule matches."),
+                    glyph = "✉",
+                    onBack = { page = pageHome },
+                    primaryActionLabel = tr("New"),
+                    onPrimaryAction = {
+                        editingNotifyRuleId = ""
+                        viewModel.resetNotifyRuleForm()
+                        page = pageNotifyRuleForm
+                    },
+                    secondaryActionLabel = tr("Refresh"),
+                    onSecondaryAction = { viewModel.refreshNotifyRuleListOnDevice() }
+                )
 
-                Card(
+                SummaryInfoStrip(
+                    glyph = "✉",
+                    title = tr("Trigger overview"),
+                    primaryMetric = "${tr("items")}: ${notifyRules.size}",
+                    secondaryMetric = "${tr("Enabled")}: ${notifyRules.count { it.enabled }}"
+                )
+
+                SurfacePanel(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
+                        .weight(1f),
+                    background = MaterialTheme.colorScheme.surface,
+                    borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
                 ) {
                     if (notifyRules.isEmpty()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp)
-                        ) {
-                            Text(
-                                text = tr("No notification triggers yet."),
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                            )
-                        }
+                        EmptyStateBox(
+                            title = tr("No notification triggers yet."),
+                            detail = tr("Create one after you know which app and message pattern should trigger the task.")
+                        )
                     } else {
                         LazyColumn(
                             state = notifyListState,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            modifier = Modifier.fillMaxSize()
                         ) {
-                            items(notifyRules, key = { it.id }) { rule ->
+                            itemsIndexed(notifyRules, key = { _, it -> it.id }) { index, rule ->
                                 NotificationRuleRow(
                                     rule = rule,
                                     onToggleEnabled = { checked ->
@@ -1532,6 +2407,12 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                     },
                                     onDelete = { viewModel.removeNotifyRuleOnDevice(rule.id) }
                                 )
+                                if (index < notifyRules.lastIndex) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 18.dp),
+                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1545,62 +2426,50 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 modifier = modifier
                     .fillMaxSize()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { page = pageHome },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Back"), fontSize = 12.sp)
-                    }
-                    Text(
-                        text = tr("Recent Runs"),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(top = 6.dp)
-                    )
-                    OutlinedButton(
-                        onClick = { viewModel.refreshTaskListOnDevice() },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Refresh"), fontSize = 12.sp)
-                    }
-                }
+                PageHeaderBlock(
+                    title = tr("Recent Runs"),
+                    subtitle = tr("Review what just ran, what failed, and what route data was captured."),
+                    glyph = "☰",
+                    onBack = { page = pageHome },
+                    primaryActionLabel = tr("Refresh"),
+                    onPrimaryAction = { viewModel.refreshTaskListOnDevice() }
+                )
 
-                Card(
+                SummaryInfoStrip(
+                    glyph = "☰",
+                    title = tr("Run history"),
+                    primaryMetric = "${tr("items")}: ${tasks.size}",
+                    secondaryMetric = "${tr("FAILED")}: ${tasks.count { it.state == "FAILED" }}",
+                    accentColor = if (tasks.any { it.state == "FAILED" }) AppWarning else MaterialTheme.colorScheme.primary
+                )
+
+                SurfacePanel(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
+                        .weight(1f),
+                    background = MaterialTheme.colorScheme.surface,
+                    borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
                 ) {
                     if (tasks.isEmpty()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp)
-                    ) {
-                        Text(
-                            text = tr("No runs yet. Submit a task from Task Session or wait for schedules."),
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        EmptyStateBox(
+                            title = tr("No runs yet."),
+                            detail = tr("Submit a quick task, or wait for a schedule or notification trigger to fire.")
                         )
-                        }
                     } else {
                         LazyColumn(
                             state = taskListState,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            modifier = Modifier.fillMaxSize()
                         ) {
-                            items(tasks, key = { it.taskId }) { task ->
+                            itemsIndexed(tasks, key = { _, it -> it.taskId }) { index, task ->
                                 TaskRow(task = task, onClick = { selectedTask = task })
+                                if (index < tasks.lastIndex) {
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 18.dp),
+                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1620,42 +2489,58 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            page = pageScheduleList
-                            editingScheduleId = ""
-                        },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Back"), fontSize = 12.sp)
+                PageHeaderBlock(
+                    title = if (isEditing) tr("Edit Schedule") else tr("Create Schedule"),
+                    subtitle = tr("Set what to do, when to run it, and which app it should open."),
+                    glyph = "⏰",
+                    onBack = {
+                        page = pageScheduleList
+                        editingScheduleId = ""
                     }
-                    Text(
-                        text = if (isEditing) tr("Edit Schedule") else tr("Create Schedule"),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(top = 6.dp)
-                    )
-                }
+                )
 
-                Card(modifier = Modifier.fillMaxWidth()) {
+                SurfacePanel(
+                    modifier = Modifier.fillMaxWidth(),
+                    background = MaterialTheme.colorScheme.surface,
+                    borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
+                ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
+                        SheetHeader(
+                            title = tr("Basic info"),
+                            subtitle = tr("Name the rule and describe what the phone should do.")
+                        )
+                        OutlinedTextField(
+                            value = scheduleName,
+                            onValueChange = { viewModel.scheduleName.value = it },
+                            label = { Text(tr("Name (optional)")) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
                         OutlinedTextField(
                             value = scheduleTask,
                             onValueChange = { viewModel.scheduleTask.value = it },
                             label = { Text(tr("Task description (required)")) },
                             modifier = Modifier.fillMaxWidth(),
                             maxLines = 3
+                        )
+                        OutlinedTextField(
+                            value = schedulePlaybook,
+                            onValueChange = { viewModel.schedulePlaybook.value = it },
+                            label = { Text(tr("User playbook (optional)")) },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 4
+                        )
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.20f))
+
+                        SheetHeader(
+                            title = tr("Execution target"),
+                            subtitle = tr("Choose when the task runs and which app it should open first.")
                         )
                         Text(
                             text = "${tr("Run time")}: ${formatTsFull(selectedRunAt)}",
@@ -1690,9 +2575,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                 Text(tr("Pick Date"))
                             }
                             OutlinedButton(
-                                onClick = {
-                                    showTimeWheel = true
-                                },
+                                onClick = { showTimeWheel = true },
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Text(tr("Pick Time"))
@@ -1775,13 +2658,6 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
                             )
                         }
-                        OutlinedTextField(
-                            value = scheduleName,
-                            onValueChange = { viewModel.scheduleName.value = it },
-                            label = { Text(tr("Name (optional)")) },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
                         PackageSelectField(
                             title = tr("Package (select from local snapshot)"),
                             selectedPackage = schedulePackage,
@@ -1794,13 +2670,64 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                             },
                             onClear = { viewModel.schedulePackage.value = "" }
                         )
-                        OutlinedTextField(
-                            value = schedulePlaybook,
-                            onValueChange = { viewModel.schedulePlaybook.value = it },
-                            label = { Text(tr("User playbook (optional)")) },
-                            modifier = Modifier.fillMaxWidth(),
-                            maxLines = 4
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.20f))
+
+                        SheetHeader(
+                            title = tr("Execution preference"),
+                            subtitle = tr("These settings affect recording and learned route behavior for this schedule.")
                         )
+                        Text(
+                            text = tr("Task route mode"),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RepeatModeButton(
+                                text = tr("Off"),
+                                selected = scheduleTaskMapMode == MainViewModel.TASK_MAP_MODE_OFF,
+                                onClick = { viewModel.scheduleTaskMapMode.value = MainViewModel.TASK_MAP_MODE_OFF },
+                                modifier = Modifier.weight(1f)
+                            )
+                            RepeatModeButton(
+                                text = tr("Auto learn"),
+                                selected = scheduleTaskMapMode == MainViewModel.TASK_MAP_MODE_AI,
+                                onClick = { viewModel.scheduleTaskMapMode.value = MainViewModel.TASK_MAP_MODE_AI },
+                                modifier = Modifier.weight(1f)
+                            )
+                            RepeatModeButton(
+                                text = tr("Manual"),
+                                selected = scheduleTaskMapMode == MainViewModel.TASK_MAP_MODE_MANUAL,
+                                onClick = { viewModel.scheduleTaskMapMode.value = MainViewModel.TASK_MAP_MODE_MANUAL },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isEditing) {
+                            OutlinedButton(
+                                onClick = {
+                                    routeEditorTarget = RouteEditorTarget(
+                                        title = if (scheduleName.isNotBlank()) scheduleName else scheduleTask,
+                                        source = "schedule",
+                                        sourceId = editingScheduleId,
+                                        packageName = schedulePackage,
+                                        mode = scheduleTaskMapMode
+                                    )
+                                    page = pageTaskRouteEditor
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(tr("Open task route editor"))
+                            }
+                        } else {
+                            Text(
+                                text = tr("Task route editing is available after the task config has been saved once."),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1822,6 +2749,22 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                 onCheckedChange = { viewModel.scheduleRecordEnabled.value = it }
                             )
                         }
+                    }
+                }
+
+                SurfacePanel(
+                    modifier = Modifier.fillMaxWidth(),
+                    background = MaterialTheme.colorScheme.primaryContainer,
+                    borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        SheetHeader(
+                            title = tr("Save schedule"),
+                            subtitle = tr("Your schedule will appear in the list after it is saved.")
+                        )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1892,36 +2835,31 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            page = pageNotifyRuleList
-                            editingNotifyRuleId = ""
-                        },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text(tr("Back"), fontSize = 12.sp)
+                PageHeaderBlock(
+                    title = tr(if (isEditing) "Edit Notification Trigger" else "Create Notification Trigger"),
+                    subtitle = tr("Set which notifications to listen for, then define what task should run."),
+                    glyph = "✉",
+                    onBack = {
+                        page = pageNotifyRuleList
+                        editingNotifyRuleId = ""
                     }
-                    Text(
-                        text = tr(if (isEditing) "Edit Notification Trigger" else "Create Notification Trigger"),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(top = 6.dp)
-                    )
-                }
+                )
 
-                Card(modifier = Modifier.fillMaxWidth()) {
+                SurfacePanel(
+                    modifier = Modifier.fillMaxWidth(),
+                    background = MaterialTheme.colorScheme.surface,
+                    borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
+                ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
+                        SheetHeader(
+                            title = tr("Basic info"),
+                            subtitle = tr("Name the rule and describe the task that should run after a match.")
+                        )
                         OutlinedTextField(
                             value = notifyName,
                             onValueChange = { viewModel.notifyName.value = it },
@@ -1943,24 +2881,12 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                             modifier = Modifier.fillMaxWidth(),
                             maxLines = 8
                         )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = tr("Record screen for triggered task"),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Switch(
-                                checked = notifyActionRecordEnabled,
-                                onCheckedChange = { viewModel.notifyActionRecordEnabled.value = it }
-                            )
-                        }
-                        Text(
-                            text = tr("Rule settings"),
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.20f))
+
+                        SheetHeader(
+                            title = tr("Trigger conditions"),
+                            subtitle = tr("The rule checks package first, then title/body matching, then optional LLM condition.")
                         )
                         PackageSelectField(
                             title = "${tr("Package match (required)")} - ${tr("Select App")}",
@@ -1973,6 +2899,20 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                 showNotifyPackagePicker = true
                             },
                             onClear = { viewModel.notifyPackageListRaw.value = "" }
+                        )
+                        OutlinedTextField(
+                            value = notifyTitlePattern,
+                            onValueChange = { viewModel.notifyTitlePattern.value = it },
+                            label = { Text(tr("Title match (optional)")) },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 2
+                        )
+                        OutlinedTextField(
+                            value = notifyBodyPattern,
+                            onValueChange = { viewModel.notifyBodyPattern.value = it },
+                            label = { Text(tr("Body match (optional)")) },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 4
                         )
                         OutlinedTextField(
                             value = notifyCooldownMs,
@@ -2001,20 +2941,6 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
-                        OutlinedTextField(
-                            value = notifyTitlePattern,
-                            onValueChange = { viewModel.notifyTitlePattern.value = it },
-                            label = { Text(tr("Title match (optional)")) },
-                            modifier = Modifier.fillMaxWidth(),
-                            maxLines = 2
-                        )
-                        OutlinedTextField(
-                            value = notifyBodyPattern,
-                            onValueChange = { viewModel.notifyBodyPattern.value = it },
-                            label = { Text(tr("Body match (optional)")) },
-                            modifier = Modifier.fillMaxWidth(),
-                            maxLines = 4
-                        )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -2038,6 +2964,94 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                 maxLines = 4
                             )
                         }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.20f))
+
+                        SheetHeader(
+                            title = tr("Execution preference"),
+                            subtitle = tr("These settings affect route learning and recording after the trigger is matched.")
+                        )
+                        Text(
+                            text = tr("Task route mode"),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RepeatModeButton(
+                                text = tr("Off"),
+                                selected = notifyActionTaskMapMode == MainViewModel.TASK_MAP_MODE_OFF,
+                                onClick = { viewModel.notifyActionTaskMapMode.value = MainViewModel.TASK_MAP_MODE_OFF },
+                                modifier = Modifier.weight(1f)
+                            )
+                            RepeatModeButton(
+                                text = tr("Auto learn"),
+                                selected = notifyActionTaskMapMode == MainViewModel.TASK_MAP_MODE_AI,
+                                onClick = { viewModel.notifyActionTaskMapMode.value = MainViewModel.TASK_MAP_MODE_AI },
+                                modifier = Modifier.weight(1f)
+                            )
+                            RepeatModeButton(
+                                text = tr("Manual"),
+                                selected = notifyActionTaskMapMode == MainViewModel.TASK_MAP_MODE_MANUAL,
+                                onClick = { viewModel.notifyActionTaskMapMode.value = MainViewModel.TASK_MAP_MODE_MANUAL },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (isEditing) {
+                            OutlinedButton(
+                                onClick = {
+                                    routeEditorTarget = RouteEditorTarget(
+                                        title = if (notifyName.isNotBlank()) notifyName else notifyActionUserTask,
+                                        source = "notify_trigger",
+                                        sourceId = editingNotifyRuleId,
+                                        packageName = notifyActionPackage,
+                                        mode = notifyActionTaskMapMode
+                                    )
+                                    page = pageTaskRouteEditor
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(tr("Open task route editor"))
+                            }
+                        } else {
+                            Text(
+                                text = tr("Task route editing is available after the task config has been saved once."),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = tr("Record screen for triggered task"),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Switch(
+                                checked = notifyActionRecordEnabled,
+                                onCheckedChange = { viewModel.notifyActionRecordEnabled.value = it }
+                            )
+                        }
+                    }
+                }
+
+                SurfacePanel(
+                    modifier = Modifier.fillMaxWidth(),
+                    background = MaterialTheme.colorScheme.primaryContainer,
+                    borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        SheetHeader(
+                            title = tr("Save trigger"),
+                            subtitle = tr("The rule will appear in the notification trigger list after it is saved.")
+                        )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -2076,70 +3090,709 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 )
             }
         }
+
+        pageTaskRouteEditor -> {
+            val target = routeEditorTarget
+            LaunchedEffect(target?.source, target?.sourceId, target?.packageName, target?.userTask, target?.userPlaybook, target?.mode) {
+                if (target != null) {
+                    viewModel.clearTaskMapDetail()
+                    viewModel.loadTaskMapDetailByQuery(
+                        source = target.source,
+                        sourceId = target.sourceId,
+                        packageName = target.packageName,
+                        userTask = target.userTask,
+                        userPlaybook = target.userPlaybook,
+                        mode = target.mode
+                    )
+                }
+            }
+            if (target == null) {
+                Column(
+                    modifier = modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(onClick = { page = pageHome }) {
+                        Text(tr("Back"))
+                    }
+                    Text(
+                        text = tr("No task route data yet."),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+            } else {
+                TaskRouteEditorPage(
+                    modifier = modifier,
+                    target = target,
+                    routeDetail = taskMapDetail,
+                    loading = taskMapDetailLoading,
+                    saving = taskMapSaving,
+                    onBack = {
+                        page = when (target.source) {
+                            "schedule" -> pageScheduleForm
+                            "notify_trigger" -> pageNotifyRuleForm
+                            else -> pageHome
+                        }
+                    },
+                    onRefresh = {
+                        viewModel.loadTaskMapDetailByQuery(
+                            source = target.source,
+                            sourceId = target.sourceId,
+                            packageName = target.packageName,
+                            userTask = target.userTask,
+                            userPlaybook = target.userPlaybook,
+                            mode = target.mode
+                        )
+                    },
+                    onDeleteTaskMap = {
+                        val key = taskMapDetail?.taskKeyHash.orEmpty()
+                        viewModel.deleteTaskMapByQuery(
+                            taskKeyHash = key,
+                            source = target.source,
+                            sourceId = target.sourceId,
+                            packageName = target.packageName,
+                            userTask = target.userTask,
+                            userPlaybook = target.userPlaybook,
+                            mode = target.mode
+                        ) {
+                            viewModel.loadTaskMapDetailByQuery(
+                                source = target.source,
+                                sourceId = target.sourceId,
+                                packageName = target.packageName,
+                                userTask = target.userTask,
+                                userPlaybook = target.userPlaybook,
+                                mode = target.mode
+                            )
+                        }
+                    },
+                    onSaveManualTaskMap = { deleteIds, finishAfterReplay ->
+                        val key = taskMapDetail?.taskKeyHash.orEmpty()
+                        viewModel.saveManualTaskMapByKey(
+                            taskKeyHash = key,
+                            deleteActionIds = deleteIds,
+                            finishAfterReplay = finishAfterReplay
+                        ) {
+                            viewModel.loadTaskMapDetailByQuery(
+                                source = target.source,
+                                sourceId = target.sourceId,
+                                packageName = target.packageName,
+                                userTask = target.userTask,
+                                userPlaybook = target.userPlaybook,
+                                mode = target.mode
+                            )
+                        }
+                    }
+                )
+            }
+        }
     }
 
     val detail = selectedTask
     if (detail != null) {
-        AlertDialog(
-            onDismissRequest = { selectedTask = null },
-            title = { Text(tr("Task Details")) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (detail.taskSummary.isNotBlank()) {
-                        Text(
-                            text = detail.taskSummary,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    } else {
-                        Text(
-                            text = tr("No task summary available yet."),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                    Text("${tr("Task ID")}=${detail.taskId}", fontSize = 11.sp)
+        TaskDetailDialog(
+            task = detail,
+            routeDetail = taskMapDetail,
+            loading = taskMapDetailLoading,
+            onDismiss = { selectedTask = null },
+            onRefresh = { viewModel.loadTaskMapDetail(detail) }
+        )
+    }
+}
+
+@Composable
+private fun TaskDetailDialog(
+    task: TaskSummary,
+    routeDetail: TaskMapDetail?,
+    loading: Boolean,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    val scrollState = rememberScrollState()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr("Task Details")) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TaskSummarySection(task = task)
+                if (loading) {
                     Text(
-                        text = "${tr("State")}=${tr(detail.state)}" +
-                                if (detail.finalState.isNotBlank()) " / ${tr(detail.finalState)}" else "",
-                        fontSize = 11.sp
+                        text = tr("Loading task route details..."),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
                     )
-                    if (detail.reason.isNotBlank()) {
-                        Text("${tr("Reason")}=${detail.reason}", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
-                    }
-                    if (detail.userTask.isNotBlank()) {
-                        Text("${tr("Task")}=${detail.userTask}", fontSize = 11.sp)
-                    }
-                    if (detail.packageName.isNotBlank()) {
-                        Text("${tr("Package name")}=${detail.packageName}", fontSize = 11.sp)
-                    }
-                    if (detail.targetPage.isNotBlank()) {
-                        Text("${tr("Target page")}=${detail.targetPage}", fontSize = 11.sp)
-                    }
-                    if (detail.source.isNotBlank()) {
-                        Text("${tr("Source")}=${detail.source}", fontSize = 11.sp)
-                    }
-                    if (detail.scheduleId.isNotBlank()) {
-                        Text("${tr("Schedule ID")}=${detail.scheduleId}", fontSize = 11.sp)
-                    }
-                    Text("${tr("Memory applied")}=${if (detail.memoryApplied) tr("Yes") else tr("No")}", fontSize = 11.sp)
-                    Text("${tr("Record enabled")}=${if (detail.recordEnabled) tr("Yes") else tr("No")}", fontSize = 11.sp)
-                    if (detail.recordFile.isNotBlank()) {
-                        Text("${tr("Record file")}=${detail.recordFile}", fontSize = 11.sp)
-                    }
-                    if (detail.createdAt > 0L) {
-                        Text("${tr("Created at")}=${formatTsFull(detail.createdAt)}", fontSize = 11.sp)
-                    }
-                    if (detail.finishedAt > 0L) {
-                        Text("${tr("Finished at")}=${formatTsFull(detail.finishedAt)}", fontSize = 11.sp)
+                }
+                val effectiveDetail = routeDetail
+                if (effectiveDetail != null) {
+                    TaskMapMetaSection(detail = effectiveDetail)
+                    SavedTaskMapSection(taskMap = effectiveDetail.taskMap)
+                    TaskRouteRecordSection(
+                        title = tr("Latest Success Trace"),
+                        emptyText = tr("No latest success trace yet."),
+                        record = effectiveDetail.latestSuccessRecord,
+                        editable = false,
+                        saving = false,
+                        selectedDeleteIds = emptySet(),
+                        onToggleDelete = {},
+                        onSaveManual = {}
+                    )
+                    if (effectiveDetail.latestAttemptRecord != null) {
+                        TaskRouteRecordSection(
+                            title = tr("Latest Attempt Trace"),
+                            emptyText = tr("No latest attempt trace yet."),
+                            record = effectiveDetail.latestAttemptRecord,
+                            editable = false,
+                            saving = false,
+                            selectedDeleteIds = emptySet(),
+                            onToggleDelete = {},
+                            onSaveManual = {}
+                        )
                     }
                 }
-            },
-            confirmButton = {
-                OutlinedButton(onClick = { selectedTask = null }) {
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onRefresh) {
+                    Text(tr("Refresh detail"))
+                }
+                OutlinedButton(onClick = onDismiss) {
                     Text(tr("Close"))
                 }
             }
+        }
+    )
+}
+
+@Composable
+private fun TaskRouteEditorPage(
+    modifier: Modifier = Modifier,
+    target: RouteEditorTarget,
+    routeDetail: TaskMapDetail?,
+    loading: Boolean,
+    saving: Boolean,
+    onBack: () -> Unit,
+    onRefresh: () -> Unit,
+    onDeleteTaskMap: () -> Unit,
+    onSaveManualTaskMap: (List<String>, Boolean) -> Unit
+) {
+    val scrollState = rememberScrollState()
+    var deleteActionIds by remember(routeDetail?.latestSuccessRecord?.createdAtMs, routeDetail?.latestSuccessRecord?.actions?.size) {
+        mutableStateOf(setOf<String>())
+    }
+    var finishAfterReplay by remember(routeDetail?.taskMap?.createdAtMs, routeDetail?.taskMap?.finishAfterReplay) {
+        mutableStateOf(routeDetail?.taskMap?.finishAfterReplay ?: false)
+    }
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(
+                onClick = onBack,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Text(tr("Back"), fontSize = 12.sp)
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = tr("Task Route Editor"),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = tr("Review the captured path, delete noisy actions, and save only the useful route."),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                )
+            }
+            OutlinedButton(
+                onClick = onRefresh,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Text(tr("Refresh"), fontSize = 12.sp)
+            }
+        }
+
+        SurfacePanel(
+            modifier = Modifier.fillMaxWidth(),
+            background = MaterialTheme.colorScheme.primaryContainer,
+            borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SheetHeader(
+                    title = tr("Task route target"),
+                    subtitle = tr("This page edits the route asset for one exact task only.")
+                )
+                DetailTextLine(tr("Summary"), target.title.ifBlank { tr("(no task description)") })
+                if (target.source.isNotBlank()) DetailTextLine(tr("Source"), target.source)
+                if (target.sourceId.isNotBlank()) DetailTextLine(tr("Source ID"), target.sourceId)
+                if (target.packageName.isNotBlank()) DetailTextLine(tr("Package name"), target.packageName)
+                if (target.mode.isNotBlank()) DetailTextLine(tr("Task route mode"), target.mode)
+                Text(
+                    text = tr("Tap a card to view full details."),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+        }
+
+        SurfacePanel(
+            modifier = Modifier.fillMaxWidth(),
+            background = MaterialTheme.colorScheme.surface,
+            borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.62f)
+        ) {
+            Row(
+                modifier = Modifier.padding(18.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(tr("Replay behavior"), style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = tr("If enabled, a successful task-route replay skips VISION_ACT and finishes the current sub-task directly."),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+                Switch(
+                    checked = finishAfterReplay,
+                    onCheckedChange = { finishAfterReplay = it }
+                )
+            }
+        }
+
+        if (loading) {
+            Text(
+                text = tr("Loading task route details..."),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+            )
+        }
+        if (!loading && routeDetail == null) {
+            Text(
+                text = tr("No task route data yet."),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+            )
+        }
+        if (routeDetail != null) {
+            TaskMapMetaSection(detail = routeDetail)
+            SavedTaskMapSection(taskMap = routeDetail.taskMap)
+            TaskRouteRecordSection(
+                title = tr("Latest Success Trace"),
+                emptyText = tr("No latest success trace yet."),
+                record = routeDetail.latestSuccessRecord,
+                editable = true,
+                saving = saving,
+                selectedDeleteIds = deleteActionIds,
+                onToggleDelete = { actionId ->
+                    deleteActionIds = if (deleteActionIds.contains(actionId)) {
+                        deleteActionIds - actionId
+                    } else {
+                        deleteActionIds + actionId
+                    }
+                },
+                onSaveManual = { onSaveManualTaskMap(deleteActionIds.toList(), finishAfterReplay) }
+            )
+            if (routeDetail.latestAttemptRecord != null) {
+                TaskRouteRecordSection(
+                    title = tr("Latest Attempt Trace"),
+                    emptyText = tr("No latest attempt trace yet."),
+                    record = routeDetail.latestAttemptRecord,
+                    editable = false,
+                    saving = false,
+                    selectedDeleteIds = emptySet(),
+                    onToggleDelete = {},
+                    onSaveManual = {}
+                )
+            }
+            if (routeDetail.hasMap) {
+                SurfacePanel(
+                    modifier = Modifier.fillMaxWidth(),
+                    background = AppErrorSoft,
+                    borderColor = AppError.copy(alpha = 0.18f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(tr("Delete task route"), style = MaterialTheme.typography.titleSmall, color = AppError)
+                        OutlinedButton(onClick = onDeleteTaskMap, modifier = Modifier.fillMaxWidth()) {
+                            Text(tr("Delete task route"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskSummarySection(task: TaskSummary) {
+    Card {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = if (task.taskSummary.isNotBlank()) task.taskSummary else tr("No task summary available yet."),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            DetailTextLine(tr("Task ID"), task.taskId)
+            DetailTextLine(
+                tr("State"),
+                "${tr(task.state)}" + if (task.finalState.isNotBlank()) " / ${tr(task.finalState)}" else ""
+            )
+            if (task.reason.isNotBlank()) {
+                Text(
+                    text = "${tr("Reason")}=${task.reason}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (task.userTask.isNotBlank()) DetailTextLine(tr("Task"), task.userTask)
+            if (task.packageName.isNotBlank()) DetailTextLine(tr("Package name"), task.packageName)
+            if (task.targetPage.isNotBlank()) DetailTextLine(tr("Target page"), task.targetPage)
+            if (task.source.isNotBlank()) DetailTextLine(tr("Source"), task.source)
+            if (task.taskMapMode.isNotBlank()) DetailTextLine(tr("Task route mode"), task.taskMapMode)
+            DetailTextLine(tr("Saved task route"), if (task.hasTaskMap) tr("Yes") else tr("No"))
+            if (task.scheduleId.isNotBlank()) DetailTextLine(tr("Schedule ID"), task.scheduleId)
+            DetailTextLine(tr("Memory applied"), if (task.memoryApplied) tr("Yes") else tr("No"))
+            DetailTextLine(tr("Record enabled"), if (task.recordEnabled) tr("Yes") else tr("No"))
+            if (task.recordFile.isNotBlank()) DetailTextLine(tr("Record file"), task.recordFile)
+            if (task.createdAt > 0L) DetailTextLine(tr("Created at"), formatTsFull(task.createdAt))
+            if (task.finishedAt > 0L) DetailTextLine(tr("Finished at"), formatTsFull(task.finishedAt))
+        }
+    }
+}
+
+@Composable
+private fun TaskMapMetaSection(detail: TaskMapDetail) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(tr("Task route detail"), style = MaterialTheme.typography.labelLarge)
+            if (detail.taskKeyHash.isNotBlank()) DetailTextLine(tr("Task route key"), detail.taskKeyHash)
+            if (detail.mode.isNotBlank()) DetailTextLine(tr("Task route mode"), detail.mode)
+            if (detail.source.isNotBlank()) DetailTextLine(tr("Source"), detail.source)
+            if (detail.sourceId.isNotBlank()) DetailTextLine(tr("Source ID"), detail.sourceId)
+            if (detail.packageName.isNotBlank()) DetailTextLine(tr("Package name"), detail.packageName)
+            if (detail.userTask.isNotBlank()) DetailTextLine(tr("Task"), detail.userTask)
+            DetailTextLine(tr("Saved task route"), if (detail.hasMap) tr("Yes") else tr("No"))
+            DetailTextLine(tr("Finish after replay"), if (detail.taskMap?.finishAfterReplay == true) tr("Yes") else tr("No"))
+            DetailTextLine(tr("Latest success trace"), if (detail.hasLatestSuccessRecord) tr("Yes") else tr("No"))
+            DetailTextLine(tr("Latest attempt trace"), if (detail.hasLatestAttemptRecord) tr("Yes") else tr("No"))
+        }
+    }
+}
+
+@Composable
+private fun SavedTaskMapSection(taskMap: TaskMapSnapshot?) {
+    Card {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(tr("Saved Route"), style = MaterialTheme.typography.titleSmall)
+            if (taskMap == null) {
+                Text(tr("No saved route yet."), fontSize = 12.sp)
+                return@Column
+            }
+            if (taskMap.packageName.isNotBlank()) DetailTextLine(tr("Package name"), taskMap.packageName)
+            if (taskMap.packageLabel.isNotBlank()) DetailTextLine(tr("App label"), taskMap.packageLabel)
+            if (taskMap.createdFromTaskId.isNotBlank()) DetailTextLine(tr("Created from task"), taskMap.createdFromTaskId)
+            if (taskMap.createdAtMs > 0L) DetailTextLine(tr("Created at"), formatTsFull(taskMap.createdAtMs))
+            if (taskMap.lastReplayStatus.isNotBlank()) DetailTextLine(tr("Last replay status"), taskMap.lastReplayStatus)
+            DetailTextLine(tr("Finish after replay"), if (taskMap.finishAfterReplay) tr("Yes") else tr("No"))
+            taskMap.segments.forEachIndexed { index, segment ->
+                TaskMapSegmentCard(index = index, segment = segment)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskMapSegmentCard(index: Int, segment: TaskMapSegmentSnapshot) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("${tr("Segment")} ${index + 1}", style = MaterialTheme.typography.labelLarge)
+            if (segment.segmentId.isNotBlank()) DetailTextLine(tr("Segment ID"), segment.segmentId)
+            if (segment.subTaskId.isNotBlank()) DetailTextLine(tr("Sub-task ID"), segment.subTaskId)
+            DetailTextLine(tr("Sub-task index"), segment.subTaskIndex.toString())
+            if (segment.subTaskDescription.isNotBlank()) DetailTextLine(tr("Task description"), segment.subTaskDescription)
+            if (segment.successCriteria.isNotBlank()) DetailTextLine(tr("Success criteria"), segment.successCriteria)
+            if (segment.packageName.isNotBlank()) DetailTextLine(tr("Package name"), segment.packageName)
+            if (segment.packageLabel.isNotBlank()) DetailTextLine(tr("App label"), segment.packageLabel)
+            if (segment.inputs.isNotEmpty()) DetailTextLine(tr("Inputs"), segment.inputs.joinToString(", "))
+            if (segment.outputs.isNotEmpty()) DetailTextLine(tr("Outputs"), segment.outputs.joinToString(", "))
+            segment.steps.forEachIndexed { stepIndex, step ->
+                TaskMapStepCard(index = stepIndex, step = step)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskMapStepCard(index: Int, step: TaskMapStepSnapshot) {
+    Card {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("${tr("Step")} ${index + 1}", style = MaterialTheme.typography.labelMedium)
+            if (step.stepId.isNotBlank()) DetailTextLine(tr("Step ID"), step.stepId)
+            if (step.sourceActionId.isNotBlank()) DetailTextLine(tr("Source action ID"), step.sourceActionId)
+            if (step.op.isNotBlank()) DetailTextLine(tr("Operation"), step.op)
+            if (step.args.isNotEmpty()) DetailTextLine(tr("Arguments"), step.args.joinToString(" "))
+            if (step.fallbackPoint.isNotBlank()) DetailTextLine(tr("Fallback point"), step.fallbackPoint)
+            if (step.semanticNote.isNotBlank()) DetailTextLine(tr("Semantic note"), step.semanticNote)
+            if (step.expected.isNotBlank()) DetailTextLine(tr("Expected result"), step.expected)
+            if (step.locatorFields.isNotEmpty()) {
+                TraceDetailSection(
+                    title = tr("Locator"),
+                    items = step.locatorFields
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskRouteRecordSection(
+    title: String,
+    emptyText: String,
+    record: TaskRouteRecordSnapshot?,
+    editable: Boolean,
+    saving: Boolean,
+    selectedDeleteIds: Set<String>,
+    onToggleDelete: (String) -> Unit,
+    onSaveManual: () -> Unit
+) {
+    var selectedAction by remember(record?.createdAtMs, record?.actions?.size) {
+        mutableStateOf<TaskRouteActionSnapshot?>(null)
+    }
+    Card {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            if (record == null) {
+                Text(emptyText, fontSize = 12.sp)
+                return@Column
+            }
+            if (record.taskId.isNotBlank()) DetailTextLine(tr("Task ID"), record.taskId)
+            if (record.rootTask.isNotBlank()) DetailTextLine(tr("Root task"), record.rootTask)
+            if (record.packageName.isNotBlank()) DetailTextLine(tr("Package name"), record.packageName)
+            if (record.packageLabel.isNotBlank()) DetailTextLine(tr("App label"), record.packageLabel)
+            if (record.createdAtMs > 0L) DetailTextLine(tr("Created at"), formatTsFull(record.createdAtMs))
+            if (record.status.isNotBlank()) DetailTextLine(tr("Status"), record.status)
+            if (record.finalState.isNotBlank()) DetailTextLine(tr("Final state"), record.finalState)
+            if (record.reason.isNotBlank()) DetailTextLine(tr("Reason"), record.reason)
+            if (editable) {
+                DetailTextLine(tr("Selected deletions"), selectedDeleteIds.size.toString())
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onSaveManual,
+                        enabled = !saving && record.actions.isNotEmpty()
+                    ) {
+                        Text(if (saving) tr("Saving...") else tr("Save manual route"))
+                    }
+                }
+            }
+            if (record.actions.isEmpty()) {
+                Text(tr("No trace actions yet."), fontSize = 12.sp)
+            } else {
+                record.actions.forEachIndexed { index, action ->
+                    TaskRouteActionCard(
+                        index = index,
+                        action = action,
+                        editable = editable,
+                        checked = selectedDeleteIds.contains(action.actionId),
+                        onToggleDelete = { onToggleDelete(action.actionId) },
+                        onOpenDetail = { selectedAction = action }
+                    )
+                }
+            }
+        }
+    }
+    selectedAction?.let { action ->
+        TaskRouteActionDetailDialog(
+            action = action,
+            onDismiss = { selectedAction = null }
         )
     }
+}
+
+@Composable
+private fun TaskRouteActionCard(
+    index: Int,
+    action: TaskRouteActionSnapshot,
+    editable: Boolean,
+    checked: Boolean,
+    onToggleDelete: () -> Unit,
+    onOpenDetail: () -> Unit
+) {
+    val summary = when {
+        action.createdPageSemantics.isNotBlank() -> action.createdPageSemantics
+        action.rawCommand.isNotBlank() -> action.rawCommand
+        action.args.isNotEmpty() -> action.args.joinToString(" ")
+        else -> action.op
+    }
+    val accentColor = if (action.execError.isNotBlank()) {
+        MaterialTheme.colorScheme.error
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    SurfacePanel(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpenDetail() },
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = accentColor.copy(alpha = 0.18f)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            GlyphBadge(
+                glyph = when (action.op.uppercase(Locale.ROOT)) {
+                    "TAP" -> "⌖"
+                    "SWIPE" -> "↕"
+                    "INPUT" -> "⌨"
+                    "BACK" -> "←"
+                    else -> "•"
+                },
+                accentColor = accentColor
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("${tr("Action")} ${index + 1}", style = MaterialTheme.typography.labelLarge)
+                    if (editable) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { onToggleDelete() }
+                            )
+                            Text(tr("Delete from saved route"), fontSize = 12.sp)
+                        }
+                    }
+                }
+                Text(
+                    text = "${tr("Operation")}=${action.op.ifBlank { "-" }}  •  ${tr("Turn")}=${action.turn}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                )
+                if (action.execResult.isNotBlank() || action.execError.isNotBlank()) {
+                    Text(
+                        text = if (action.execError.isNotBlank()) {
+                            "${tr("Execution error")}=${action.execError}"
+                        } else {
+                            "${tr("Execution result")}=${action.execResult}"
+                        },
+                        fontSize = 11.sp,
+                        color = if (action.execError.isNotBlank()) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                        }
+                    )
+                }
+                Text(
+                    text = "${tr("Summary")}=${summary.take(160)}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskRouteActionDetailDialog(
+    action: TaskRouteActionSnapshot,
+    onDismiss: () -> Unit
+) {
+    val scrollState = rememberScrollState()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr("Action")) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (action.actionId.isNotBlank()) DetailTextLine(tr("Action ID"), action.actionId)
+                if (action.subTaskId.isNotBlank()) DetailTextLine(tr("Sub-task ID"), action.subTaskId)
+                DetailTextLine(tr("Turn"), action.turn.toString())
+                if (action.op.isNotBlank()) DetailTextLine(tr("Operation"), action.op)
+                if (action.args.isNotEmpty()) DetailTextLine(tr("Arguments"), action.args.joinToString(" "))
+                if (action.rawCommand.isNotBlank()) DetailTextLine(tr("Command"), action.rawCommand)
+                if (action.createdPageSemantics.isNotBlank()) DetailTextLine(tr("Page semantics"), action.createdPageSemantics)
+                if (action.execResult.isNotBlank()) DetailTextLine(tr("Execution result"), action.execResult)
+                if (action.execError.isNotBlank()) DetailTextLine(tr("Execution error"), action.execError)
+                if (action.locatorFields.isNotEmpty()) {
+                    TraceDetailSection(title = tr("Locator"), items = action.locatorFields)
+                }
+                if (action.visionFields.isNotEmpty()) {
+                    TraceDetailSection(title = tr("Vision fields"), items = action.visionFields)
+                }
+            }
+        },
+        confirmButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text(tr("Close"))
+            }
+        }
+    )
+}
+
+@Composable
+private fun DetailTextLine(label: String, value: String) {
+    if (value.isBlank()) return
+    Text("$label=$value", fontSize = 11.sp)
 }
 
 @Composable
@@ -2150,32 +3803,76 @@ fun ScheduleRow(
     onDelete: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = scheme.surfaceVariant),
-        onClick = onEdit
+    val listToggleColors = SwitchDefaults.colors(
+        checkedThumbColor = scheme.surface,
+        checkedTrackColor = AppSuccess,
+        checkedBorderColor = AppSuccess,
+        uncheckedThumbColor = scheme.surface,
+        uncheckedTrackColor = scheme.primary.copy(alpha = 0.22f).compositeOver(scheme.surface),
+        uncheckedBorderColor = scheme.primary.copy(alpha = 0.45f)
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onEdit)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
     ) {
-        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        GlyphBadge(glyph = "⏰", accentColor = scheme.primary)
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                val title = if (schedule.name.isNotEmpty()) schedule.name else schedule.userTask
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    if (schedule.name.isNotEmpty() && schedule.userTask != title) {
+                        Text(
+                            text = schedule.userTask,
+                            fontSize = 11.sp,
+                            color = scheme.onSurface.copy(alpha = 0.72f)
+                        )
+                    }
+                }
+                StatusTag(
+                    text = if (schedule.enabled) tr("Enabled") else tr("Paused"),
+                    accentColor = if (schedule.enabled) AppSuccess else scheme.onSurface.copy(alpha = 0.55f)
+                )
+            }
             Text(
-                text = if (schedule.name.isNotEmpty()) schedule.name else schedule.userTask,
-                style = MaterialTheme.typography.bodyMedium
+                text = "${tr("Run time")}: ${formatTsFull(schedule.runAtMs)}",
+                fontSize = 11.sp,
+                color = scheme.onSurface.copy(alpha = 0.75f)
             )
             Text(
-                text = "${tr("Run time")}=${formatTsFull(schedule.runAtMs)}, " +
-                        "${tr("Repeat")}=${formatRepeat(schedule.repeatMode, schedule.repeatWeekdays)}, " +
-                        "${tr("Next run")}=${formatTsFull(schedule.nextRunAt)}, " +
-                        "${tr("Triggered count")}=${schedule.triggerCount}, " +
-                        "${tr("Record")}=${if (schedule.recordEnabled) tr("On") else tr("Off")}",
+                text = "${tr("Repeat")}: ${formatRepeat(schedule.repeatMode, schedule.repeatWeekdays)}  •  ${tr("Next run")}: ${formatTsFull(schedule.nextRunAt)}",
                 fontSize = 11.sp,
                 color = scheme.onSurface.copy(alpha = 0.75f)
             )
             if (schedule.packageName.isNotEmpty()) {
                 Text(
-                    text = "${tr("Package name")}=${schedule.packageName}",
+                    text = "${tr("App")}: ${schedule.packageName}",
                     fontSize = 11.sp,
                     color = scheme.onSurface.copy(alpha = 0.75f)
                 )
             }
+            Text(
+                text = "${tr("Triggered count")}: ${schedule.triggerCount}  •  ${tr("Record")}: ${if (schedule.recordEnabled) tr("On") else tr("Off")}",
+                fontSize = 11.sp,
+                color = scheme.onSurface.copy(alpha = 0.75f)
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2192,7 +3889,8 @@ fun ScheduleRow(
                 ) {
                     Switch(
                         checked = schedule.enabled,
-                        onCheckedChange = onToggleEnabled
+                        onCheckedChange = onToggleEnabled,
+                        colors = listToggleColors
                     )
                     OutlinedButton(
                         onClick = onDelete,
@@ -2215,26 +3913,60 @@ fun NotificationRuleRow(
     onDelete: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = scheme.surfaceVariant),
-        onClick = onEdit
+    val listToggleColors = SwitchDefaults.colors(
+        checkedThumbColor = scheme.surface,
+        checkedTrackColor = AppSuccess,
+        checkedBorderColor = AppSuccess,
+        uncheckedThumbColor = scheme.surface,
+        uncheckedTrackColor = scheme.primary.copy(alpha = 0.22f).compositeOver(scheme.surface),
+        uncheckedBorderColor = scheme.primary.copy(alpha = 0.45f)
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onEdit)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
     ) {
-        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        GlyphBadge(glyph = "✉", accentColor = scheme.primary)
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             val title = when {
                 rule.name.isNotBlank() -> rule.name
                 rule.actionUserTask.isNotBlank() -> rule.actionUserTask
                 else -> tr("(no task)")
             }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (rule.actionUserTask.isNotBlank() && rule.actionUserTask != title) {
+                        Text(
+                            text = rule.actionUserTask,
+                            fontSize = 11.sp,
+                            color = scheme.onSurface.copy(alpha = 0.72f)
+                        )
+                    }
+                }
+                StatusTag(
+                    text = if (rule.enabled) tr("Enabled") else tr("Paused"),
+                    accentColor = if (rule.enabled) AppSuccess else scheme.onSurface.copy(alpha = 0.55f)
+                )
+            }
             Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Text(
-                text = "${tr("Enabled")}=${if (rule.enabled) tr("Yes") else tr("No")}, " +
-                        "${tr("Priority")}=${rule.priority}, " +
-                        "${tr("Package mode")}=${tr(rule.packageMode)}, " +
-                        "${tr("Text match mode")}=${tr(rule.textMode)}",
+                text = "${tr("Listening app")}: ${rule.packageList.joinToString(", ").ifBlank { tr("(not set)") }}",
                 fontSize = 11.sp,
                 color = scheme.onSurface.copy(alpha = 0.75f)
             )
@@ -2244,19 +3976,20 @@ fun NotificationRuleRow(
                 tr("Anytime")
             }
             Text(
-                text = "${tr("Cooldown")}=${rule.cooldownMs / 1000}s, " +
-                        "${tr("Time window")}=$timeWindow, " +
-                        "${tr("Record")}=${if (rule.actionRecordEnabled) tr("On") else tr("Off")}",
+                text = "${tr("Match")}: ${rule.titlePattern.ifBlank { "-" }} / ${rule.bodyPattern.ifBlank { "-" }}",
                 fontSize = 11.sp,
                 color = scheme.onSurface.copy(alpha = 0.75f)
             )
-            if (rule.packageList.isNotEmpty()) {
-                Text(
-                    text = "${tr("Package list")}=${rule.packageList.joinToString(", ").take(100)}",
-                    fontSize = 11.sp,
-                    color = scheme.onSurface.copy(alpha = 0.75f)
-                )
-            }
+            Text(
+                text = "${tr("Trigger interval")}: ${rule.cooldownMs / 1000}s  •  ${tr("Time window")}: $timeWindow",
+                fontSize = 11.sp,
+                color = scheme.onSurface.copy(alpha = 0.75f)
+            )
+            Text(
+                text = "${tr("Record")}: ${if (rule.actionRecordEnabled) tr("On") else tr("Off")}  •  LLM: ${if (rule.llmConditionEnabled) tr("On") else tr("Off")}",
+                fontSize = 11.sp,
+                color = scheme.onSurface.copy(alpha = 0.75f)
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2273,7 +4006,8 @@ fun NotificationRuleRow(
                 ) {
                     Switch(
                         checked = rule.enabled,
-                        onCheckedChange = onToggleEnabled
+                        onCheckedChange = onToggleEnabled,
+                        colors = listToggleColors
                     )
                     OutlinedButton(
                         onClick = onDelete,
@@ -2403,27 +4137,49 @@ private fun PackagePickerDialog(
 @Composable
 fun TaskRow(task: TaskSummary, onClick: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
-    val bgColor = when (task.state) {
-        "COMPLETED" -> scheme.surfaceVariant
-        "CANCELLED" -> scheme.surfaceVariant
-        "FAILED" -> scheme.errorContainer
-        "RUNNING" -> scheme.surfaceVariant
-        else -> scheme.surface
-    }
-    val primaryTextColor = if (task.state == "FAILED") scheme.onErrorContainer else scheme.onSurface
-    Card(
+    Row(
         modifier = Modifier
-            .fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = bgColor),
-        onClick = onClick
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                text = if (task.userTask.isNotEmpty()) task.userTask else tr("(no task description)"),
-                style = MaterialTheme.typography.bodyMedium,
-                color = primaryTextColor
-            )
-            Spacer(modifier = Modifier.height(2.dp))
+        val accentColor = when (task.state) {
+            "FAILED" -> scheme.error
+            "RUNNING" -> scheme.primary
+            "COMPLETED" -> AppSuccess
+            else -> scheme.onSurface.copy(alpha = 0.55f)
+        }
+        GlyphBadge(
+            glyph = when (task.state) {
+                "FAILED" -> "!"
+                "RUNNING" -> "▶"
+                "COMPLETED" -> "✓"
+                else -> "•"
+            },
+            accentColor = accentColor
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Text(
+                    text = if (task.userTask.isNotEmpty()) task.userTask else tr("(no task description)"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (task.state == "FAILED") scheme.error else scheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                StatusTag(
+                    text = tr(task.state),
+                    accentColor = accentColor
+                )
+            }
             val stateParts = mutableListOf(tr(task.state))
             if (task.finalState.isNotEmpty()) {
                 stateParts += tr(task.finalState)
@@ -2444,7 +4200,7 @@ fun TaskRow(task: TaskSummary, onClick: () -> Unit) {
             )
             if (task.reason.isNotEmpty()) {
                 Text(
-                    text = "${tr("Reason")}=${task.reason}",
+                    text = "${tr("Reason")}: ${task.reason}",
                     fontSize = 10.sp,
                     color = scheme.error
                 )
@@ -2756,6 +4512,8 @@ fun ConfigTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         )
         1 -> SingleConfigPage(
             title = tr("Control mode config"),
+            subtitle = tr("Choose how touch, typing, and task-time phone behavior should work on this device."),
+            glyph = "⌁",
             modifier = modifier,
             onBack = { page = 0 }
         ) {
@@ -2763,6 +4521,8 @@ fun ConfigTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         }
         2 -> SingleConfigPage(
             title = tr("LLM config (device-side)"),
+            subtitle = tr("Set the model endpoint used for device-side planning and visual understanding."),
+            glyph = "✦",
             modifier = modifier,
             onBack = { page = 0 }
         ) {
@@ -2770,6 +4530,8 @@ fun ConfigTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         }
         3 -> SingleConfigPage(
             title = tr("Unlock & lock policy"),
+            subtitle = tr("Control how the phone is unlocked before a task and locked again afterward."),
+            glyph = "🔐",
             modifier = modifier,
             onBack = { page = 0 }
         ) {
@@ -2777,6 +4539,8 @@ fun ConfigTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         }
         4 -> SingleConfigPage(
             title = tr("Map sync & source"),
+            subtitle = tr("Manage route assets, active map lane, and pull-by-identifier actions."),
+            glyph = "➜",
             modifier = modifier,
             onBack = { page = 0 }
         ) {
@@ -2785,7 +4549,7 @@ fun ConfigTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     }
 }
 
-// Tab 3: Logs
+// Logs
 
 private data class TracePrependAnchor(
     val count: Int,
@@ -2858,8 +4622,18 @@ fun LogsTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        PageHeaderBlock(
+            title = tr("Logs"),
+            subtitle = tr("Inspect live core traces, open structured details, and export the full trace when you need to debug."),
+            glyph = "≡",
+            primaryActionLabel = tr("Export"),
+            onPrimaryAction = { viewModel.exportAllTraceToDevice() },
+            secondaryActionLabel = tr("Refresh"),
+            onSecondaryAction = { viewModel.refreshTraceTailOnDevice(limit = 80) }
+        )
         LogPanel(
             traceLines = traceLines,
             listState = listState,
@@ -2881,7 +4655,12 @@ fun LogsTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    SurfacePanel(
+                        modifier = Modifier.fillMaxWidth(),
+                        background = MaterialTheme.colorScheme.surfaceVariant,
+                        borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
                         Column(
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -2890,12 +4669,12 @@ fun LogsTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                             if (detail.summary.isNotBlank()) {
                                 Text(detail.summary, fontSize = 12.sp)
                             }
-                        if (detail.timestamp.isNotBlank()) {
-                            Text("${tr("Timestamp")}: ${detail.timestamp}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        if (detail.taskId.isNotBlank()) {
-                            Text("${tr("Task ID")}: ${detail.taskId}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                            if (detail.timestamp.isNotBlank()) {
+                                Text("${tr("Timestamp")}: ${detail.timestamp}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (detail.taskId.isNotBlank()) {
+                                Text("${tr("Task ID")}: ${detail.taskId}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                     if (detail.meta.isNotEmpty()) {
@@ -2910,7 +4689,12 @@ fun LogsTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                             items = detail.fields
                         )
                     } else if (detail.detail.isNotBlank()) {
-                        Card {
+                        SurfacePanel(
+                            modifier = Modifier.fillMaxWidth(),
+                            background = MaterialTheme.colorScheme.surface,
+                            borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
+                            shape = RoundedCornerShape(20.dp)
+                        ) {
                             Text(
                                 detail.detail,
                                 fontSize = 11.sp,
@@ -2920,7 +4704,12 @@ fun LogsTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     } else {
                         Text(tr("No trace details."), fontSize = 11.sp)
                     }
-                    Card(colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.04f))) {
+                    SurfacePanel(
+                        modifier = Modifier.fillMaxWidth(),
+                        background = MaterialTheme.colorScheme.surfaceVariant,
+                        borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
                         Column(
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -2950,84 +4739,72 @@ fun LogPanel(
     onOpenTrace: (TraceEntry) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(modifier = modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier
-                .padding(8.dp)
-                .fillMaxSize()
+    Column(
+        modifier = modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        when {
+            traceExportUiState.exporting -> {
+                StatusNotice(
+                    text = tr("Exporting trace..."),
+                    accentColor = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            traceExportUiState.status == "success" -> {
+                StatusNotice(
+                    text = "${tr("Trace exported")}: ${tr("Saved to")} ${traceExportUiState.savedPath}",
+                    accentColor = AppSuccess
+                )
+            }
+
+            traceExportUiState.status == "empty" -> {
+                StatusNotice(
+                    text = tr("No trace to export."),
+                    accentColor = MaterialTheme.colorScheme.secondary
+                )
+            }
+
+            traceExportUiState.status == "failure" -> {
+                StatusNotice(
+                    text = "${tr("Trace export failed")}: ${traceExportUiState.error}",
+                    accentColor = AppError
+                )
+            }
+        }
+        SurfacePanel(
+            modifier = Modifier.fillMaxSize(),
+            background = MaterialTheme.colorScheme.surface,
+            borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f),
+            shape = RoundedCornerShape(24.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(tr("Core Trace"), style = MaterialTheme.typography.titleSmall)
-                OutlinedButton(
-                    onClick = onExportTrace,
-                    enabled = !traceExportUiState.exporting
-                ) {
-                    Text(
-                        text = tr(if (traceExportUiState.exporting) "Exporting..." else "Export"),
-                        fontSize = 12.sp
-                    )
-                }
-            }
-            when {
-                traceExportUiState.exporting -> {
-                    Text(
-                        text = tr("Exporting trace..."),
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                }
-
-                traceExportUiState.status == "success" -> {
-                    Text(
-                        text = "${tr("Trace exported")}: ${tr("Saved to")} ${traceExportUiState.savedPath}",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                }
-
-                traceExportUiState.status == "empty" -> {
-                    Text(
-                        text = tr("No trace to export."),
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                }
-
-                traceExportUiState.status == "failure" -> {
-                    Text(
-                        text = "${tr("Trace export failed")}: ${traceExportUiState.error}",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                }
-            }
-            Spacer(modifier = Modifier.height(4.dp))
             LazyColumn(
                 state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.05f))
+                modifier = Modifier.fillMaxSize()
             ) {
+                item(key = "trace_hint") {
+                    Text(
+                        text = tr("Latest traces stay at the bottom. Scroll upward to load older ones."),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    )
+                }
                 if (showLoadingOlder) {
                     item(key = "loading_older") {
                         Text(
                             text = tr("Load older traces..."),
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp)
                         )
                     }
                 }
                 items(traceLines, key = { if (it.seq > 0L) it.seq else it.rawLine.hashCode().toLong() }) { entry ->
                     TraceCard(entry = entry, onClick = { onOpenTrace(entry) })
+                }
+                item(key = "trace_footer_space") {
+                    Spacer(modifier = Modifier.height(6.dp))
                 }
             }
         }
@@ -3037,43 +4814,55 @@ fun LogPanel(
 @Composable
 private fun TraceCard(entry: TraceEntry, onClick: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
-    val container = when {
-        entry.isError -> scheme.errorContainer
-        entry.event.startsWith("notify_") -> scheme.secondaryContainer
-        entry.event == "fsm_state_enter" -> scheme.primaryContainer
-        else -> scheme.surface
+    val accent = when {
+        entry.isError -> scheme.error
+        entry.event.startsWith("notify_") -> scheme.secondary
+        entry.event == "fsm_state_enter" -> scheme.primary
+        else -> scheme.onSurface.copy(alpha = 0.42f)
     }
-    val content = when {
-        entry.isError -> scheme.onErrorContainer
-        entry.event.startsWith("notify_") -> scheme.onSecondaryContainer
-        entry.event == "fsm_state_enter" -> scheme.onPrimaryContainer
-        else -> scheme.onSurface
-    }
-    Card(
+    SurfacePanel(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 6.dp, vertical = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = container),
-        onClick = onClick
+        background = if (entry.isError) AppErrorSoft else scheme.surface,
+        borderColor = accent.copy(alpha = 0.18f),
+        shape = RoundedCornerShape(20.dp)
     ) {
         Column(
-            modifier = Modifier.padding(10.dp),
+            modifier = Modifier
+                .clickable(onClick = onClick)
+                .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = entry.event,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = content
-                )
-                if (entry.timestamp.isNotBlank()) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    GlyphBadge(
+                        glyph = when {
+                            entry.isError -> "!"
+                            entry.event.startsWith("notify_") -> "✉"
+                            entry.event == "fsm_state_enter" -> "↺"
+                            else -> "•"
+                        },
+                        accentColor = accent,
+                        size = 28.dp
+                    )
                     Text(
+                        text = entry.event,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = scheme.onSurface
+                    )
+                }
+                if (entry.timestamp.isNotBlank()) {
+                    StatusTag(
                         text = entry.timestamp.takeLast(12),
-                        fontSize = 10.sp,
-                        color = content.copy(alpha = 0.75f)
+                        accentColor = accent
                     )
                 }
             }
@@ -3081,7 +4870,7 @@ private fun TraceCard(entry: TraceEntry, onClick: () -> Unit) {
                 Text(
                     text = entry.summary,
                     fontSize = 11.sp,
-                    color = content.copy(alpha = 0.92f),
+                    color = scheme.onSurface.copy(alpha = 0.92f),
                     maxLines = 2
                 )
             }
@@ -3089,7 +4878,7 @@ private fun TraceCard(entry: TraceEntry, onClick: () -> Unit) {
                 Text(
                     text = "${tr("Task")}=${entry.taskId.take(8)}...",
                     fontSize = 10.sp,
-                    color = content.copy(alpha = 0.7f)
+                    color = scheme.onSurface.copy(alpha = 0.7f)
                 )
             }
         }
@@ -3099,7 +4888,12 @@ private fun TraceCard(entry: TraceEntry, onClick: () -> Unit) {
 @Composable
 private fun TraceDetailSection(title: String, items: List<TraceMetaItem>) {
     if (items.isEmpty()) return
-    Card {
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f),
+        shape = RoundedCornerShape(20.dp)
+    ) {
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -3142,74 +4936,93 @@ fun ConfigOverviewPage(
             .fillMaxSize()
             .verticalScroll(scrollState)
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        Text(
-            tr("Config center"),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurface
+        PageHeaderBlock(
+            title = tr("Config center"),
+            subtitle = tr("Choose a category to configure. Each section opens a dedicated settings page."),
+            glyph = "⚙"
         )
-        Text(
-            text = tr("Choose a category to configure. Each section opens a dedicated settings page."),
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+
+        SummaryInfoStrip(
+            glyph = if (coreRuntime.ready) "✓" else "!",
+            title = tr("Current setup"),
+            primaryMetric = "${tr("State")}: ${if (coreRuntime.ready) tr("Core Connected") else tr("Core Disconnected")}",
+            secondaryMetric = if (uiLang == "zh") tr("Chinese") else tr("English"),
+            accentColor = if (coreRuntime.ready) AppSuccess else AppWarning
         )
-        ConfigEntryCard(
-            title = tr("Control mode config"),
-            description = tr("If taps/swipes are not working, adjust compatibility mode here."),
-            onClick = onOpenDeviceCore
+
+        ProductSectionCard(
+            title = tr("Recommended first"),
+            subtitle = tr("Most people only need model and control settings before starting tasks."),
+            glyph = "★"
         ) {
-            val statusText = if (coreRuntime.ready) tr("Core Connected") else tr("Core Disconnected")
-            Text(
-                text = "${tr("State")}: $statusText",
-                fontSize = 12.sp,
-                color = if (coreRuntime.ready) Color(0xFF2E7D32) else Color(0xFFE65100)
+            ConfigEntryCard(
+                title = tr("LLM config (device-side)"),
+                description = tr("Base URL, API key and model for device-side LLM/VLM calls."),
+                onClick = onOpenLlm
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            Button(
+            ConfigEntryCard(
+                title = tr("Control mode config"),
+                description = tr("If taps, swipes, or typing are not behaving well on your phone, adjust them here."),
                 onClick = onOpenDeviceCore,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(tr("Open control mode settings"))
-            }
+                badgeText = if (coreRuntime.ready) tr("Ready") else tr("Needs sync")
+            )
         }
-        ConfigEntryCard(
-            title = tr("Language"),
-            description = tr("Language for app UI text."),
-            onClick = {}
+
+        ProductSectionCard(
+            title = tr("Device behavior"),
+            subtitle = tr("Language, unlock, and other phone-side behavior live here."),
+            glyph = "☑"
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { viewModel.setUiLang("en") },
-                    modifier = Modifier.weight(1f),
-                    enabled = uiLang != "en"
+            SurfacePanel(
+                modifier = Modifier.fillMaxWidth(),
+                background = MaterialTheme.colorScheme.surfaceVariant,
+                borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.20f),
+                shape = RoundedCornerShape(22.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(tr("English"))
-                }
-                OutlinedButton(
-                    onClick = { viewModel.setUiLang("zh") },
-                    modifier = Modifier.weight(1f),
-                    enabled = uiLang != "zh"
-                ) {
-                    Text(tr("Chinese"))
+                    SheetHeader(
+                        title = tr("Language"),
+                        subtitle = tr("Language for app UI text.")
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ModeChoiceButton(
+                            text = tr("English"),
+                            selected = uiLang == "en",
+                            onClick = { viewModel.setUiLang("en") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ModeChoiceButton(
+                            text = tr("Chinese"),
+                            selected = uiLang == "zh",
+                            onClick = { viewModel.setUiLang("zh") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
+            ConfigEntryCard(
+                title = tr("Unlock & lock policy"),
+                description = tr("Auto unlock before route, auto lock after task, and lockscreen credentials."),
+                onClick = onOpenUnlockPolicy
+            )
         }
-        ConfigEntryCard(
-            title = tr("LLM config (device-side)"),
-            description = tr("Base URL, API key and model for device-side LLM/VLM calls."),
-            onClick = onOpenLlm
-        )
-        ConfigEntryCard(
-            title = tr("Unlock & lock policy"),
-            description = tr("Auto unlock before route, auto lock after task, and lockscreen credentials."),
-            onClick = onOpenUnlockPolicy
-        )
-        ConfigEntryCard(
-            title = tr("Map sync & source"),
-            description = tr("Sync stable maps, pull map by identifier, and choose runtime source lane."),
-            onClick = onOpenMapSync
-        )
+
+        ProductSectionCard(
+            title = tr("Map routing"),
+            subtitle = tr("Route asset source, sync, and identifier pull controls."),
+            glyph = "➜"
+        ) {
+            ConfigEntryCard(
+                title = tr("Map sync & source"),
+                description = tr("Sync stable maps, pull map by identifier, and choose runtime source lane."),
+                onClick = onOpenMapSync
+            )
+        }
     }
 }
 
@@ -3218,31 +5031,45 @@ fun ConfigEntryCard(
     title: String,
     description: String,
     onClick: () -> Unit,
-    content: (@Composable () -> Unit)? = null
+    badgeText: String? = null
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        onClick = onClick
+    SurfacePanel(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        background = MaterialTheme.colorScheme.surfaceVariant,
+        borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.20f),
+        shape = RoundedCornerShape(22.dp)
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                if (!badgeText.isNullOrBlank()) {
+                    StatusTag(text = badgeText, accentColor = MaterialTheme.colorScheme.primary)
+                }
+            }
             Text(
                 text = description,
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
             )
-            if (content != null) {
-                Spacer(modifier = Modifier.height(4.dp))
-                content()
-            }
+            Text(
+                text = "${tr("Open")} ›",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }
@@ -3250,6 +5077,8 @@ fun ConfigEntryCard(
 @Composable
 fun SingleConfigPage(
     title: String,
+    subtitle: String? = null,
+    glyph: String = "⚙",
     modifier: Modifier = Modifier,
     onBack: () -> Unit,
     content: @Composable () -> Unit
@@ -3260,32 +5089,126 @@ fun SingleConfigPage(
             .fillMaxSize()
             .verticalScroll(scrollState)
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = onBack,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 8.dp,
-                    vertical = 4.dp
-                ),
-                modifier = Modifier.height(32.dp)
-            ) {
-                Text(tr("Back"), fontSize = 12.sp)
-            }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier
-                    .padding(start = 4.dp)
-                    .weight(1f),
-                color = MaterialTheme.colorScheme.onSurface
+        if (!subtitle.isNullOrBlank()) {
+            PageHeaderBlock(
+                title = title,
+                subtitle = subtitle,
+                glyph = glyph,
+                onBack = onBack
             )
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PageActionButton(text = tr("Back"), onClick = onBack)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .weight(1f),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
         content()
+    }
+}
+
+@Composable
+private fun SettingsSectionCard(
+    title: String,
+    subtitle: String? = null,
+    glyph: String = "•",
+    content: @Composable () -> Unit
+) {
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = MaterialTheme.colorScheme.surface,
+        borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.58f)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                GlyphBadge(
+                    glyph = glyph,
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    size = 34.dp
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(title, style = MaterialTheme.typography.titleSmall)
+                    if (!subtitle.isNullOrBlank()) {
+                        Text(
+                            text = subtitle,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                        )
+                    }
+                }
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun PreferenceSwitchRow(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = detail,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
+        )
+    }
+}
+
+@Composable
+private fun StatusNotice(
+    text: String,
+    accentColor: Color
+) {
+    SurfacePanel(
+        modifier = Modifier.fillMaxWidth(),
+        background = accentColor.copy(alpha = 0.09f).compositeOver(MaterialTheme.colorScheme.surface),
+        borderColor = accentColor.copy(alpha = 0.22f),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            fontSize = 11.sp,
+            color = accentColor
+        )
     }
 }
 
@@ -3300,192 +5223,169 @@ fun LxbCoreConfigCard(viewModel: MainViewModel) {
 
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(tr("Control mode config"), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    tr("Configure touch injection mode and compatibility."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    text = "${tr("State")}: ${if (coreRuntime.ready) tr("Core Connected") else tr("Core Disconnected")}",
-                    fontSize = 12.sp,
-                    color = if (coreRuntime.ready) Color(0xFF2E7D32) else Color(0xFFE65100)
-                )
-                OutlinedTextField(
-                    value = lxbPort,
-                    onValueChange = { viewModel.lxbPort.value = it },
-                    label = { Text(tr("TCP port")) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    supportingText = {
-                        Text(
-                            tr("TCP port listened by lxb-core on device (default 12345)"),
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            fontSize = 12.sp
-                        )
-                    }
-                )
-            }
-        }
+        SummaryInfoStrip(
+            glyph = if (coreRuntime.ready) "✓" else "!",
+            title = tr("Device control"),
+            primaryMetric = "${tr("State")}: ${if (coreRuntime.ready) tr("Core Connected") else tr("Core Disconnected")}",
+            secondaryMetric = if (touchMode == MainViewModel.TOUCH_MODE_SHELL) tr("Shell") else tr("UIAutomator"),
+            accentColor = if (coreRuntime.ready) AppSuccess else AppWarning
+        )
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(tr("Touch input mode"), style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    tr("How taps/swipes are injected to the device."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    fontSize = 12.sp
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    ModeChoiceButton(
-                        text = tr("Shell"),
-                        selected = touchMode == MainViewModel.TOUCH_MODE_SHELL,
-                        onClick = { viewModel.setTouchMode(MainViewModel.TOUCH_MODE_SHELL) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    ModeChoiceButton(
-                        text = tr("UIAutomator"),
-                        selected = touchMode == MainViewModel.TOUCH_MODE_UIAUTOMATION,
-                        onClick = { viewModel.setTouchMode(MainViewModel.TOUCH_MODE_UIAUTOMATION) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(tr("Text input mode"), style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    tr("Recommended: install ADB Keyboard. If detected, core will switch to it only while typing, then restore your original keyboard automatically."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    tr("If ADB Keyboard is not detected, fallback input will still work, but some apps may fail to accept Chinese text."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    fontSize = 12.sp
-                )
-                Text(
-                    text = buildString {
-                        append(tr(if (adbKeyboardUiState.installed) "Detected" else "Not detected"))
-                        if (adbKeyboardUiState.installed && adbKeyboardUiState.label.isNotBlank()) {
-                            append(": ")
-                            append(adbKeyboardUiState.label)
-                        }
-                    },
-                    fontSize = 12.sp,
-                    color = if (adbKeyboardUiState.installed) Color(0xFF2E7D32) else Color(0xFFE65100)
-                )
-                if (adbKeyboardUiState.currentImeId.isNotBlank()) {
+        SettingsSectionCard(
+            title = tr("Connection"),
+            subtitle = tr("Device-side core connection settings."),
+            glyph = "⌁"
+        ) {
+            OutlinedTextField(
+                value = lxbPort,
+                onValueChange = { viewModel.lxbPort.value = it },
+                label = { Text(tr("TCP port")) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                supportingText = {
                     Text(
-                        text = "${tr("Current keyboard")}: ${adbKeyboardUiState.currentImeId}",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                        tr("TCP port listened by lxb-core on device (default 12345)"),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        fontSize = 12.sp
                     )
                 }
+            )
+        }
+
+        SettingsSectionCard(
+            title = tr("Touch input mode"),
+            subtitle = tr("Choose the injection strategy used for taps and swipes."),
+            glyph = "☞"
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ModeChoiceButton(
+                    text = tr("Shell"),
+                    selected = touchMode == MainViewModel.TOUCH_MODE_SHELL,
+                    onClick = { viewModel.setTouchMode(MainViewModel.TOUCH_MODE_SHELL) },
+                    modifier = Modifier.weight(1f)
+                )
+                ModeChoiceButton(
+                    text = tr("UIAutomator"),
+                    selected = touchMode == MainViewModel.TOUCH_MODE_UIAUTOMATION,
+                    onClick = { viewModel.setTouchMode(MainViewModel.TOUCH_MODE_UIAUTOMATION) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        SettingsSectionCard(
+            title = tr("Text input mode"),
+            subtitle = tr("ADB Keyboard is recommended because it gives the most reliable input experience."),
+            glyph = "⌨"
+        ) {
+            Text(
+                tr("Recommended: install ADB Keyboard. If detected, core will switch to it only while typing, then restore your original keyboard automatically."),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                fontSize = 12.sp
+            )
+            Text(
+                tr("If ADB Keyboard is not detected, fallback input will still work, but some apps may fail to accept Chinese text."),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                fontSize = 12.sp
+            )
+            StatusNotice(
+                text = buildString {
+                    append(tr(if (adbKeyboardUiState.installed) "Detected" else "Not detected"))
+                    if (adbKeyboardUiState.installed && adbKeyboardUiState.label.isNotBlank()) {
+                        append(": ")
+                        append(adbKeyboardUiState.label)
+                    }
+                },
+                accentColor = if (adbKeyboardUiState.installed) AppSuccess else AppWarning
+            )
+            if (adbKeyboardUiState.currentImeId.isNotBlank()) {
                 Text(
-                    text = tr(
-                        if (adbKeyboardUiState.installed) {
-                            "Auto-switch input channel is ready."
-                        } else {
-                            "Core will use fallback text input for now."
-                        }
-                    ),
+                    text = "${tr("Current keyboard")}: ${adbKeyboardUiState.currentImeId}",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
                 )
+            }
+            Text(
+                text = tr(
+                    if (adbKeyboardUiState.installed) {
+                        "Auto-switch input channel is ready."
+                    } else {
+                        "Core will use fallback text input for now."
+                    }
+                ),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+            )
+            OutlinedButton(
+                onClick = { viewModel.refreshAdbKeyboardStatus() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(tr("Check ADB Keyboard"))
+            }
+            if (adbKeyboardUiState.checked && !adbKeyboardUiState.installed) {
                 OutlinedButton(
-                    onClick = { viewModel.refreshAdbKeyboardStatus() },
+                    onClick = { viewModel.openAdbKeyboardReleasePage() },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(tr("Check ADB Keyboard"))
-                }
-                if (adbKeyboardUiState.checked && !adbKeyboardUiState.installed) {
-                    OutlinedButton(
-                        onClick = { viewModel.openAdbKeyboardReleasePage() },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(tr("Download ADB Keyboard"))
-                    }
+                    Text(tr("Download ADB Keyboard"))
                 }
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(tr("Task-time Do Not Disturb"), style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    tr("Policy applied when a task starts."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    fontSize = 12.sp
+        SettingsSectionCard(
+            title = tr("Task-time Do Not Disturb"),
+            subtitle = tr("Choose what happens to DND automatically when a task begins."),
+            glyph = "☾"
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ModeChoiceButton(
+                    text = tr("Keep current DND state"),
+                    selected = taskDndMode == MainViewModel.TASK_DND_MODE_SKIP,
+                    onClick = { viewModel.setTaskDndMode(MainViewModel.TASK_DND_MODE_SKIP) }
                 )
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeChoiceButton(
-                        text = tr("Keep current DND state"),
-                        selected = taskDndMode == MainViewModel.TASK_DND_MODE_SKIP,
-                        onClick = { viewModel.setTaskDndMode(MainViewModel.TASK_DND_MODE_SKIP) }
-                    )
-                    ModeChoiceButton(
-                        text = tr("Set DND to OFF (allow notifications)"),
-                        selected = taskDndMode == MainViewModel.TASK_DND_MODE_OFF,
-                        onClick = { viewModel.setTaskDndMode(MainViewModel.TASK_DND_MODE_OFF) }
-                    )
-                    ModeChoiceButton(
-                        text = tr("Set DND to NONE (silence all)"),
-                        selected = taskDndMode == MainViewModel.TASK_DND_MODE_NONE,
-                        onClick = { viewModel.setTaskDndMode(MainViewModel.TASK_DND_MODE_NONE) }
-                    )
-                }
+                ModeChoiceButton(
+                    text = tr("Set DND to OFF (allow notifications)"),
+                    selected = taskDndMode == MainViewModel.TASK_DND_MODE_OFF,
+                    onClick = { viewModel.setTaskDndMode(MainViewModel.TASK_DND_MODE_OFF) }
+                )
+                ModeChoiceButton(
+                    text = tr("Set DND to NONE (silence all)"),
+                    selected = taskDndMode == MainViewModel.TASK_DND_MODE_NONE,
+                    onClick = { viewModel.setTaskDndMode(MainViewModel.TASK_DND_MODE_NONE) }
+                )
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { viewModel.applyTouchModeToCore() },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(tr("Apply to core"))
-                    }
-                    OutlinedButton(
-                        onClick = { viewModel.saveConfig() },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(tr("Save all config only"))
-                    }
+        SettingsSectionCard(
+            title = tr("Apply changes"),
+            subtitle = tr("Push the current control configuration to core now, or only save it locally."),
+            glyph = "✓"
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { viewModel.applyTouchModeToCore() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("Apply to core"))
                 }
-                if (coreConfigResult.isNotEmpty()) {
-                    Text(
-                        text = coreConfigResult,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
-                    )
+                OutlinedButton(
+                    onClick = { viewModel.saveConfig() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("Save all config only"))
                 }
+            }
+            if (coreConfigResult.isNotEmpty()) {
+                StatusNotice(
+                    text = coreConfigResult,
+                    accentColor = if (coreConfigResult.contains("ok", ignoreCase = true) || coreConfigResult.contains("success", ignoreCase = true)) AppSuccess else MaterialTheme.colorScheme.secondary
+                )
             }
         }
     }
@@ -3532,180 +5432,179 @@ fun LlmConfigCard(viewModel: MainViewModel) {
 
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(tr("LLM config (device-side)"), style = MaterialTheme.typography.titleSmall)
-                OutlinedTextField(
-                    value = llmBaseUrl,
-                    onValueChange = { viewModel.llmBaseUrl.value = it },
-                    label = { Text(tr("API Base URL")) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    supportingText = {
-                        Text(
-                            tr("Endpoint is auto-completed to /chat/completions."),
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            fontSize = 12.sp
-                        )
-                    }
-                )
-                Text(
-                    text = "${tr("Resolved request URL")}: " +
-                        if (resolvedEndpoint.isNotBlank()) resolvedEndpoint else tr("Input API Base URL to preview request endpoint."),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f),
-                    fontSize = 12.sp
-                )
-                OutlinedTextField(
-                    value = llmApiKey,
-                    onValueChange = { viewModel.llmApiKey.value = it },
-                    label = { Text(tr("API Key")) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = llmModel,
-                    onValueChange = { viewModel.llmModel.value = it },
-                    label = { Text(tr("Model")) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    supportingText = {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(tr("e.g. gpt-4o-mini, qwen-plus"))
-                            Text(tr("Please use a model with image recognition capability."))
-                        }
-                    }
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { viewModel.testLlmAndSyncConfig() },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(tr("Test LLM & sync to device"))
-                    }
-                    OutlinedButton(
-                        onClick = { viewModel.saveConfig() },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(tr("Save only"))
-                    }
-                }
-                if (llmTestResult.isNotEmpty()) {
+        SummaryInfoStrip(
+            glyph = "✦",
+            title = tr("Model routing"),
+            primaryMetric = if (llmModel.isNotBlank()) llmModel else tr("No model selected"),
+            secondaryMetric = if (activeLlmProfileId.isNotBlank()) tr("Saved config") else tr("Draft only"),
+            accentColor = MaterialTheme.colorScheme.primary
+        )
+
+        SettingsSectionCard(
+            title = tr("Connection"),
+            subtitle = tr("Base endpoint, API key, and model used for device-side requests."),
+            glyph = "🌐"
+        ) {
+            OutlinedTextField(
+                value = llmBaseUrl,
+                onValueChange = { viewModel.llmBaseUrl.value = it },
+                label = { Text(tr("API Base URL")) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                supportingText = {
                     Text(
-                        text = llmTestResult,
-                        fontSize = 12.sp,
-                        color = if (llmTestResult.startsWith("LLM OK")) {
-                            Color(0xFF4CAF50)
-                        } else {
-                            Color(0xFFFF9800)
-                        }
+                        tr("Endpoint is auto-completed to /chat/completions."),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        fontSize = 12.sp
                     )
                 }
+            )
+            StatusNotice(
+                text = "${tr("Resolved request URL")}: " +
+                    if (resolvedEndpoint.isNotBlank()) resolvedEndpoint else tr("Input API Base URL to preview request endpoint."),
+                accentColor = MaterialTheme.colorScheme.secondary
+            )
+            OutlinedTextField(
+                value = llmApiKey,
+                onValueChange = { viewModel.llmApiKey.value = it },
+                label = { Text(tr("API Key")) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = llmModel,
+                onValueChange = { viewModel.llmModel.value = it },
+                label = { Text(tr("Model")) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                supportingText = {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(tr("e.g. gpt-4o-mini, qwen-plus"))
+                        Text(tr("Please use a model with image recognition capability."))
+                    }
+                }
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { viewModel.testLlmAndSyncConfig() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("Test LLM & sync to device"))
+                }
+                OutlinedButton(
+                    onClick = { viewModel.saveConfig() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("Save only"))
+                }
+            }
+            if (llmTestResult.isNotEmpty()) {
+                StatusNotice(
+                    text = llmTestResult,
+                    accentColor = if (llmTestResult.startsWith("LLM OK")) AppSuccess else AppWarning
+                )
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(tr("Saved local configs"), style = MaterialTheme.typography.titleSmall)
-                OutlinedTextField(
-                    value = llmProfileDraftName,
-                    onValueChange = { viewModel.llmProfileDraftName.value = it },
-                    label = { Text(tr("Config name")) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+        SettingsSectionCard(
+            title = tr("Saved local configs"),
+            subtitle = tr("Save reusable model presets locally and switch between them quickly."),
+            glyph = "☁"
+        ) {
+            OutlinedTextField(
+                value = llmProfileDraftName,
+                onValueChange = { viewModel.llmProfileDraftName.value = it },
+                label = { Text(tr("Config name")) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { viewModel.saveCurrentLlmAsNewProfile() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("Save as new"))
+                }
+                OutlinedButton(
+                    onClick = { viewModel.updateSelectedLlmProfile() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("Update selected"))
+                }
+            }
+            if (llmProfileResult.isNotEmpty()) {
+                StatusNotice(
+                    text = llmProfileResult,
+                    accentColor = MaterialTheme.colorScheme.secondary
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { viewModel.saveCurrentLlmAsNewProfile() },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(tr("Save as new"))
-                    }
-                    OutlinedButton(
-                        onClick = { viewModel.updateSelectedLlmProfile() },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(tr("Update selected"))
-                    }
-                }
-                if (llmProfileResult.isNotEmpty()) {
-                    Text(
-                        text = llmProfileResult,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f)
-                    )
-                }
-                if (llmProfiles.isEmpty()) {
-                    Text(
-                        text = tr("No saved LLM configs yet."),
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-                    )
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        llmProfiles.forEach { profile ->
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (profile.id == activeLlmProfileId) {
-                                        MaterialTheme.colorScheme.secondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                    }
-                                )
+            }
+            if (llmProfiles.isEmpty()) {
+                Text(
+                    text = tr("No saved LLM configs yet."),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    llmProfiles.forEach { profile ->
+                        SurfacePanel(
+                            modifier = Modifier.fillMaxWidth(),
+                            background = if (profile.id == activeLlmProfileId) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            borderColor = if (profile.id == activeLlmProfileId) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
                                         text = profile.name,
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                     if (profile.id == activeLlmProfileId) {
-                                        Text(
+                                        StatusTag(
                                             text = tr("Selected config"),
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.primary
+                                            accentColor = MaterialTheme.colorScheme.primary
                                         )
                                     }
-                                    if (profile.model.isNotBlank()) {
-                                        Text(
-                                            text = profile.model,
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f)
-                                        )
+                                }
+                                if (profile.model.isNotBlank()) {
+                                    Text(
+                                        text = profile.model,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f)
+                                    )
+                                }
+                                if (profile.apiBaseUrl.isNotBlank()) {
+                                    Text(
+                                        text = profile.apiBaseUrl,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                    )
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.applyLlmProfile(profile.id) },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(tr("Use this config"))
                                     }
-                                    if (profile.apiBaseUrl.isNotBlank()) {
-                                        Text(
-                                            text = profile.apiBaseUrl,
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                                        )
-                                    }
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedButton(
-                                            onClick = { viewModel.applyLlmProfile(profile.id) },
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Text(tr("Use this config"))
-                                        }
-                                        OutlinedButton(
-                                            onClick = { viewModel.deleteLlmProfile(profile.id) },
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Text(tr("Delete"))
-                                        }
+                                    OutlinedButton(
+                                        onClick = { viewModel.deleteLlmProfile(profile.id) },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(tr("Delete"))
                                     }
                                 }
                             }
@@ -3724,48 +5623,43 @@ fun UnlockPolicyConfigCard(viewModel: MainViewModel) {
     val unlockPin by viewModel.unlockPin.collectAsState()
     val llmTestResult by viewModel.llmTestResult.collectAsState()
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        SummaryInfoStrip(
+            glyph = "🔐",
+            title = tr("Unlock policy"),
+            primaryMetric = if (autoUnlockBeforeRoute) tr("Unlock before route is ON") else tr("Unlock before route is OFF"),
+            secondaryMetric = if (autoLockAfterTask) tr("Auto lock ON") else tr("Auto lock OFF"),
+            accentColor = MaterialTheme.colorScheme.primary
+        )
+
+        SettingsSectionCard(
+            title = tr("Behavior"),
+            subtitle = tr("These switches control whether the phone unlocks before a task and locks after it."),
+            glyph = "☑"
         ) {
-            Text(tr("Unlock & lock policy"), style = MaterialTheme.typography.titleSmall)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(tr("Auto unlock before route"), style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        tr("Check screen state and unlock before app launch/routing."),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        fontSize = 12.sp
-                    )
-                }
-                Switch(
-                    checked = autoUnlockBeforeRoute,
-                    onCheckedChange = { viewModel.autoUnlockBeforeRoute.value = it }
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(tr("Auto lock after task"), style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        tr("Lock screen when task ends if the FSM unlocked it."),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        fontSize = 12.sp
-                    )
-                }
-                Switch(
-                    checked = autoLockAfterTask,
-                    onCheckedChange = { viewModel.autoLockAfterTask.value = it }
-                )
-            }
+            PreferenceSwitchRow(
+                title = tr("Auto unlock before route"),
+                detail = tr("Check screen state and unlock before app launch/routing."),
+                checked = autoUnlockBeforeRoute,
+                onCheckedChange = { viewModel.autoUnlockBeforeRoute.value = it }
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            PreferenceSwitchRow(
+                title = tr("Auto lock after task"),
+                detail = tr("Lock screen when task ends if the FSM unlocked it."),
+                checked = autoLockAfterTask,
+                onCheckedChange = { viewModel.autoLockAfterTask.value = it }
+            )
+        }
+
+        SettingsSectionCard(
+            title = tr("Lockscreen credentials"),
+            subtitle = tr("Only needed when swipe unlock alone is not enough."),
+            glyph = "•"
+        ) {
             OutlinedTextField(
                 value = unlockPin,
                 onValueChange = { viewModel.unlockPin.value = it },
@@ -3778,6 +5672,13 @@ fun UnlockPolicyConfigCard(viewModel: MainViewModel) {
                     Text(tr("Used only when swipe unlock is not enough."))
                 }
             )
+        }
+
+        SettingsSectionCard(
+            title = tr("Apply changes"),
+            subtitle = tr("Sync the latest unlock settings to device now, or only save them locally."),
+            glyph = "✓"
+        ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = { viewModel.syncDeviceConfigOnly() },
@@ -3793,10 +5694,9 @@ fun UnlockPolicyConfigCard(viewModel: MainViewModel) {
                 }
             }
             if (llmTestResult.isNotEmpty()) {
-                Text(
+                StatusNotice(
                     text = llmTestResult,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
+                    accentColor = MaterialTheme.colorScheme.secondary
                 )
             }
         }
@@ -3818,12 +5718,29 @@ fun MapSyncConfigCard(viewModel: MainViewModel) {
         viewModel.refreshInstalledAppSnapshotOnDevice()
     }
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        SummaryInfoStrip(
+            glyph = "➜",
+            title = tr("Map routing"),
+            primaryMetric = if (useMap) tr("Use map routing is ON") else tr("Use map routing is OFF"),
+            secondaryMetric = tr(
+                when (mapSource) {
+                    "candidate" -> "Candidate"
+                    "burn" -> "Burn"
+                    else -> "Stable"
+                }
+            ),
+            accentColor = if (useMap) MaterialTheme.colorScheme.primary else AppWarning
+        )
+
+        SettingsSectionCard(
+            title = tr("Source & repository"),
+            subtitle = tr("Choose where maps come from and which runtime lane stays active."),
+            glyph = "☁"
         ) {
-            Text(tr("Map sync & lane control"), style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(
                 value = mapRepoRawBaseUrl,
                 onValueChange = { viewModel.mapRepoRawBaseUrl.value = it },
@@ -3835,65 +5752,51 @@ fun MapSyncConfigCard(viewModel: MainViewModel) {
                     Text(tr("e.g. https://raw.githubusercontent.com/wuwei-crg/LXB-MapRepo/main"))
                 }
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(tr("Use map routing"), style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        text = if (useMap) {
-                            tr("ON: route with map when available.")
-                        } else {
-                            tr("OFF: force no-map mode (launch then vision-only).")
-                        },
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-                    )
-                }
-                Switch(
-                    checked = useMap,
-                    onCheckedChange = { viewModel.setUseMap(it) }
+            PreferenceSwitchRow(
+                title = tr("Use map routing"),
+                detail = if (useMap) {
+                    tr("ON: route with map when available.")
+                } else {
+                    tr("OFF: force no-map mode (launch then vision-only).")
+                },
+                checked = useMap,
+                onCheckedChange = { viewModel.setUseMap(it) }
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(tr("Map source"), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = tr("Choose which lane is applied to runtime routing map."),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
                 )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(tr("Map source"), style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        text = tr("Choose which lane is applied to runtime routing map."),
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ModeChoiceButton(
+                        text = tr("Stable"),
+                        selected = mapSource == "stable",
+                        onClick = { viewModel.setMapSource("stable") },
+                        modifier = Modifier.weight(1f)
+                    )
+                    ModeChoiceButton(
+                        text = tr("Candidate"),
+                        selected = mapSource == "candidate",
+                        onClick = { viewModel.setMapSource("candidate") },
+                        modifier = Modifier.weight(1f)
+                    )
+                    ModeChoiceButton(
+                        text = tr("Burn"),
+                        selected = mapSource == "burn",
+                        onClick = { viewModel.setMapSource("burn") },
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { viewModel.setMapSource("stable") },
-                    modifier = Modifier.weight(1f),
-                    enabled = mapSource != "stable"
-                ) {
-                    Text(tr("Stable"))
-                }
-                OutlinedButton(
-                    onClick = { viewModel.setMapSource("candidate") },
-                    modifier = Modifier.weight(1f),
-                    enabled = mapSource != "candidate"
-                ) {
-                    Text(tr("Candidate"))
-                }
-                OutlinedButton(
-                    onClick = { viewModel.setMapSource("burn") },
-                    modifier = Modifier.weight(1f),
-                    enabled = mapSource != "burn"
-                ) {
-                    Text(tr("Burn"))
-                }
-            }
+        }
+
+        SettingsSectionCard(
+            title = tr("Identifier pull"),
+            subtitle = tr("Pick the app and map identifier used for pull-by-ID and active-map checks."),
+            glyph = "⌕"
+        ) {
             PackageSelectField(
                 title = tr("Package (select from local snapshot)"),
                 selectedPackage = mapTargetPackage,
@@ -3922,7 +5825,13 @@ fun MapSyncConfigCard(viewModel: MainViewModel) {
                     Text(tr("Required for stable/candidate pull by identifier."))
                 }
             )
+        }
 
+        SettingsSectionCard(
+            title = tr("Actions"),
+            subtitle = tr("Sync or pull route assets, inspect the active map, and save the current settings."),
+            glyph = "✓"
+        ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = { viewModel.syncStableMapsNow() },
@@ -3960,10 +5869,9 @@ fun MapSyncConfigCard(viewModel: MainViewModel) {
                 }
             }
             if (mapSyncResult.isNotEmpty()) {
-                Text(
+                StatusNotice(
                     text = mapSyncResult,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f)
+                    accentColor = MaterialTheme.colorScheme.secondary
                 )
             }
         }
