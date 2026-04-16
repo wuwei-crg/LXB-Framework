@@ -8,13 +8,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Android 11+](https://img.shields.io/badge/Android-11%2B-34A853?logo=android&logoColor=white)]()
-[![Latest Release](https://img.shields.io/github/v/release/wuwei-crg/LXB-Framework?label=Release)](https://github.com/wuwei-crg/LXB-Framework/releases)
+[![Latest Release](https://img.shields.io/github/v/release/wuwei-crg/AutoLXB?label=Release)](https://github.com/wuwei-crg/AutoLXB/releases)
 
 **English** | [中文](README.md)
 
 </div>
 
-AutoLXB (formerly LXB-Framework) does not let the model freely explore the whole phone UI. It follows a **Route-Then-Act** pipeline: deterministic routing is handled first, and the vision model only steps in when real dynamic interaction is needed.
+AutoLXB does not let the model freely explore the whole phone UI. It follows a **Route-Then-Act** pipeline: deterministic routing is handled first, and the vision model only steps in when real dynamic interaction is needed.
 
 ---
 
@@ -77,7 +77,7 @@ Before starting, make sure:
 
 ### 1. Install and prepare your phone
 
-1. Install the latest APK from [Releases](https://github.com/wuwei-crg/LXB-Framework/releases)
+1. Install the latest APK from [Releases](https://github.com/wuwei-crg/AutoLXB/releases)
 2. Enable Developer Options and make sure these settings are enabled:
    - `USB debugging`
    - **USB debugging must stay enabled, otherwise process keepalive may fail**
@@ -285,4 +285,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## Star Trend
 
-[![Star History Chart](https://api.star-history.com/svg?repos=wuwei-crg/LXB-Framework&type=Date)](https://star-history.com/#wuwei-crg/LXB-Framework&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=wuwei-crg/AutoLXB&type=Date)](https://star-history.com/#wuwei-crg/AutoLXB&Date)

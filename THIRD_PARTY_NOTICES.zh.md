@@ -1,6 +1,6 @@
 # 第三方声明
 
-本文档用于说明 LXB-Framework 中涉及的第三方参考来源。
+本文档用于说明 AutoLXB 中涉及的第三方参考来源。
 
 ## Shizuku
 
@@ -26,9 +26,9 @@
    - 启动前先清理旧进程，再执行新一轮拉起。
    - 通过显式 start/stop 控制进程，而不是依赖应用生命周期隐式控制。
 
-### LXB-Framework 的独立实现部分
+### AutoLXB 的独立实现部分
 
-以下模块为 LXB-Framework 自主实现，不是 Shizuku 代码复制：
+以下模块为 AutoLXB 自主实现，不是 Shizuku 代码复制：
 
 - LXB 协议/TCP 通信与命令体系
 - Cortex FSM / Route-Then-Act 执行链路

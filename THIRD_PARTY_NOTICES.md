@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This document records third-party references used in LXB-Framework.
+This document records third-party references used in AutoLXB.
 
 ## Shizuku
 
@@ -26,7 +26,7 @@ The following parts are design-level references inspired by Shizuku's public imp
    - Stop/clean old process instances before a new start attempt.
    - Keep launch/stop as explicit control actions rather than implicit app lifecycle behavior.
 
-### What Is Implemented Independently in LXB-Framework
+### What Is Implemented Independently in AutoLXB
 
 The following components are project-specific implementations and are not copied from Shizuku:
 
@@ -37,6 +37,6 @@ The following components are project-specific implementations and are not copied
 
 ### Compliance Note
 
-LXB-Framework keeps this attribution to document architectural inspiration and avoid ambiguity.
+AutoLXB keeps this attribution to document architectural inspiration and avoid ambiguity.
 For the full Apache 2.0 license text, see:
 http://www.apache.org/licenses/LICENSE-2.0

@@ -124,8 +124,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_TOUCH_MODE = "touch_mode"
         private const val KEY_TASK_DND_MODE = "task_dnd_mode"
         private const val DEFAULT_MAP_REPO_RAW_BASE_URL = "https://raw.githubusercontent.com/wuwei-crg/LXB-MapRepo/main"
-        private const val RELEASE_API_LATEST = "https://api.github.com/repos/wuwei-crg/LXB-Framework/releases/latest"
-        private const val RELEASE_WEB_LATEST = "https://github.com/wuwei-crg/LXB-Framework/releases/latest"
+        private const val RELEASE_API_LATEST = "https://api.github.com/repos/wuwei-crg/AutoLXB/releases/latest"
+        private const val RELEASE_WEB_LATEST = "https://github.com/wuwei-crg/AutoLXB/releases/latest"
         private const val ADB_KEYBOARD_RELEASE_LATEST = "https://github.com/senzhk/ADBKeyBoard/releases/latest"
         private const val DEFAULT_LLM_CONFIG_PATH = "/data/local/tmp/lxb-llm-config.json"
 
