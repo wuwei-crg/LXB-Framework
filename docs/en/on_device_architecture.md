@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document describes the **current production direction** of `LXB-Framework`.
+This document describes the **current production direction** of `AutoLXB`.
 
 Primary target:
 
@@ -57,7 +57,7 @@ Current state:
 Repository split:
 
 1. MapBuilder and map web tooling are in `LXB-MapBuilder`
-2. `LXB-Framework` keeps runtime map consumption logic only
+2. `AutoLXB` keeps runtime map consumption logic only
 
 ## Scheduling and Persistence
 

@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-本文描述 `LXB-Framework` 当前主线实现。
+本文描述 `AutoLXB` 当前主线实现。
 
 主线目标：
 
@@ -57,7 +57,7 @@
 仓库职责拆分：
 
 1. MapBuilder 与 map web 工具迁移到 `LXB-MapBuilder`
-2. `LXB-Framework` 仅保留运行时 map 消费逻辑
+2. `AutoLXB` 仅保留运行时 map 消费逻辑
 
 ## 调度与持久化
 

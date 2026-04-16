@@ -8,13 +8,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Android 11+](https://img.shields.io/badge/Android-11%2B-34A853?logo=android&logoColor=white)]()
-[![Latest Release](https://img.shields.io/github/v/release/wuwei-crg/LXB-Framework?label=Release)](https://github.com/wuwei-crg/LXB-Framework/releases)
+[![Latest Release](https://img.shields.io/github/v/release/wuwei-crg/AutoLXB?label=Release)](https://github.com/wuwei-crg/AutoLXB/releases)
 
 [English](README.en.md) | **中文**
 
 </div>
 
-AutoLXB（原 LXB-Framework）不让模型自由探索整个手机界面，而是采用 **Route-Then-Act** 流水线：先尽量用确定性的路线完成页面跳转，再把真正需要“动手”的动态界面交给视觉模型处理。
+AutoLXB 不让模型自由探索整个手机界面，而是采用 **Route-Then-Act** 流水线：先尽量用确定性的路线完成页面跳转，再把真正需要“动手”的动态界面交给视觉模型处理。
 
 ---
 
@@ -77,7 +77,7 @@ Route-Then-Act 流水线由以下几部分协同支撑：
 
 ### 1. 安装与手机准备
 
-1. 从 [Releases](https://github.com/wuwei-crg/LXB-Framework/releases) 安装最新 APK
+1. 从 [Releases](https://github.com/wuwei-crg/AutoLXB/releases) 安装最新 APK
 2. 打开手机开发者选项，并确保以下开关已打开：
    - `USB 调试`
    - **必须开启 USB 调试，否则进程可能无法保活**
@@ -285,4 +285,4 @@ MIT，见 [LICENSE](LICENSE)。
 
 ## Star 趋势
 
-[![Star History Chart](https://api.star-history.com/svg?repos=wuwei-crg/LXB-Framework&type=Date)](https://star-history.com/#wuwei-crg/LXB-Framework&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=wuwei-crg/AutoLXB&type=Date)](https://star-history.com/#wuwei-crg/AutoLXB&Date)
