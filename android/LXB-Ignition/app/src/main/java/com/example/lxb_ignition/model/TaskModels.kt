@@ -11,7 +11,7 @@ data class TaskSummary(
     val targetPage: String,
     val source: String,
     val scheduleId: String,
-    val taskKeyHash: String,
+    val routeId: String,
     val taskMapMode: String,
     val hasTaskMap: Boolean,
     val memoryApplied: Boolean,
@@ -22,7 +22,7 @@ data class TaskSummary(
 )
 
 data class TaskMapDetail(
-    val taskKeyHash: String,
+    val routeId: String,
     val mode: String,
     val source: String,
     val sourceId: String,
@@ -69,7 +69,16 @@ data class TaskMapStepSnapshot(
     val fallbackPoint: String,
     val semanticNote: String,
     val expected: String,
-    val locatorFields: List<TraceMetaItem>
+    val locatorFields: List<TraceMetaItem>,
+    val containerProbeFields: List<TraceMetaItem>,
+    val semanticDescriptorFields: List<TraceMetaItem>,
+    val tapPoint: String,
+    val swipeFields: List<TraceMetaItem>,
+    val portableKind: String,
+    val adaptationStatus: String,
+    val adaptationError: String,
+    val materializedFromStepId: String,
+    val materializedAtMs: Long
 )
 
 data class TaskRouteRecordSnapshot(

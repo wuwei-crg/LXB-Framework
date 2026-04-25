@@ -12,7 +12,7 @@ object AppStatePaths {
         val base = if (!externalBase.isNullOrBlank()) {
             File(externalBase, STATE_DIR_NAME)
         } else {
-            File("/data/local/tmp/lxb/$STATE_DIR_NAME")
+            File(context.filesDir, STATE_DIR_NAME)
         }
         if (!base.exists()) {
             runCatching { base.mkdirs() }
@@ -22,6 +22,15 @@ object AppStatePaths {
 
     fun getMapDir(context: Context): File {
         val dir = File(getStateBaseDir(context), "maps")
+        if (!dir.exists()) {
+            runCatching { dir.mkdirs() }
+        }
+        return dir
+    }
+
+
+    fun getTaskMapRootDir(context: Context): File {
+        val dir = File(getStateBaseDir(context), "task_maps")
         if (!dir.exists()) {
             runCatching { dir.mkdirs() }
         }

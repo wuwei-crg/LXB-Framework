@@ -3,8 +3,10 @@ package com.lxb.server.cortex;
 import com.lxb.server.cortex.json.Json;
 import com.lxb.server.cortex.dump.DumpActionsParser;
 import com.lxb.server.cortex.fsm.VisionCommandParser;
+import com.lxb.server.cortex.taskmap.PortableTaskRouteCodec;
 import com.lxb.server.cortex.taskmap.TaskMap;
 import com.lxb.server.cortex.taskmap.TaskMapAssembler;
+import com.lxb.server.cortex.taskmap.TaskMapLocalTapBuilder;
 import com.lxb.server.cortex.taskmap.TaskMapStore;
 import com.lxb.server.cortex.taskmap.TaskMapSubTaskRestorer;
 import com.lxb.server.cortex.taskmap.TaskRouteKey;
@@ -403,7 +405,7 @@ public class CortexFsmEngine {
         ctx.unlockReadyNotified = false;
         ctx.source = source != null ? source.trim() : "manual";
         ctx.sourceId = sourceId != null ? sourceId.trim() : "";
-        ctx.sourceConfigHash = sourceConfigHash != null ? sourceConfigHash.trim() : "";
+        ctx.sourceConfigHash = "";
         ctx.taskMapMode = taskMapMode != null ? taskMapMode.trim().toLowerCase(Locale.ROOT) : "off";
         if (ctx.taskMapMode.isEmpty()) {
             ctx.taskMapMode = "off";
@@ -415,29 +417,17 @@ public class CortexFsmEngine {
         String initialPackageName = packageName != null ? packageName : "";
         ctx.selectedPackage = initialPackageName;
         loadUnlockPolicyFromConfig(ctx);
-        ctx.taskRouteKey = TaskRouteKey.build(
+        String routeId = resolveRouteId(ctx.source, ctx.sourceId, ctx.taskId);
+        ctx.taskRouteKey = TaskRouteKey.route(
                 ctx.source,
                 ctx.sourceId,
-                ctx.sourceConfigHash,
                 initialPackageName,
                 ctx.rootUserTask,
                 ctx.userPlaybook,
-                ctx.taskMapMode
+                ctx.taskMapMode,
+                routeId
         );
-        String canonicalTaskKeyHash = ctx.taskRouteKey.taskKeyHash;
-        String resolvedExistingTaskKey = taskMapStore != null
-                ? taskMapStore.resolveExistingKeyHash(ctx.taskRouteKey, ctx.rootUserTask)
-                : "";
-        if (resolvedExistingTaskKey != null && !resolvedExistingTaskKey.isEmpty()
-                && !resolvedExistingTaskKey.equals(canonicalTaskKeyHash)) {
-            ctx.taskRouteKey = TaskRouteKey.alias(ctx.taskRouteKey, resolvedExistingTaskKey);
-            Map<String, Object> aliasEv = new LinkedHashMap<>();
-            aliasEv.put("task_id", ctx.taskId);
-            aliasEv.put("canonical_task_key_hash", canonicalTaskKeyHash);
-            aliasEv.put("resolved_task_key_hash", resolvedExistingTaskKey);
-            trace.event("task_route_key_compat_hit", aliasEv);
-        }
-        ctx.taskRouteKeyHash = ctx.taskRouteKey.taskKeyHash;
+        ctx.taskRouteKeyHash = routeId;
         Map<String, Object> keyEv = new LinkedHashMap<>();
         keyEv.put("task_id", ctx.taskId);
         keyEv.putAll(ctx.taskRouteKey.asMap());
@@ -672,7 +662,7 @@ public class CortexFsmEngine {
             out.put("map_source", ctx.mapSource);
             out.put("unlocked_by_fsm", ctx.unlockedByFsm);
             out.put("task_map_mode", ctx.taskMapMode);
-            out.put("task_key_hash", ctx.taskRouteKeyHash);
+            out.put("route_id", ctx.taskRouteKeyHash);
             out.put("task_map_root_hit", ctx.taskMapRootHit);
             out.put("task_map_replay_used", ctx.taskMapReplayUsed);
             out.put("task_map_replay_fallback_reason", ctx.taskMapReplayFallbackReason);
@@ -702,7 +692,7 @@ public class CortexFsmEngine {
             if (record.actions.isEmpty()) {
                 Map<String, Object> skip = new LinkedHashMap<>();
                 skip.put("task_id", ctx.taskId);
-                skip.put("task_key_hash", ctx.taskRouteKeyHash);
+                skip.put("route_id", ctx.taskRouteKeyHash);
                 skip.put("reason", "empty_record");
                 trace.event("task_map_generation_skipped", skip);
                 return;
@@ -712,7 +702,7 @@ public class CortexFsmEngine {
             taskMapStore.saveLatestAttemptRecord(record);
             Map<String, Object> saved = new LinkedHashMap<>();
             saved.put("task_id", ctx.taskId);
-            saved.put("task_key_hash", ctx.taskRouteKeyHash);
+            saved.put("route_id", ctx.taskRouteKeyHash);
             saved.put("status", status);
             saved.put("action_count", record.actions.size());
             saved.put("kind", "latest_attempt_record");
@@ -721,7 +711,7 @@ public class CortexFsmEngine {
             if (finalState != State.FINISH) {
                 Map<String, Object> skip = new LinkedHashMap<>();
                 skip.put("task_id", ctx.taskId);
-                skip.put("task_key_hash", ctx.taskRouteKeyHash);
+                skip.put("route_id", ctx.taskRouteKeyHash);
                 skip.put("reason", "task_failed");
                 trace.event("task_map_generation_skipped", skip);
                 return;
@@ -755,14 +745,14 @@ public class CortexFsmEngine {
             taskMapStore.saveMap(assembled);
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("task_id", ctx.taskId);
-            ev.put("task_key_hash", ctx.taskRouteKeyHash);
+            ev.put("route_id", ctx.taskRouteKeyHash);
             ev.put("segment_count", assembled.segments.size());
             ev.put("step_count", assembled.stepCount());
             trace.event("task_map_saved", ev);
         } catch (Exception e) {
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("task_id", ctx.taskId);
-            ev.put("task_key_hash", ctx.taskRouteKeyHash);
+            ev.put("route_id", ctx.taskRouteKeyHash);
             ev.put("err", String.valueOf(e));
             trace.event("task_map_finalize_error", ev);
         }
@@ -771,7 +761,7 @@ public class CortexFsmEngine {
     private void traceTaskMapGenerationSkipped(Context ctx, String reason) {
         Map<String, Object> skip = new LinkedHashMap<>();
         skip.put("task_id", ctx.taskId);
-        skip.put("task_key_hash", ctx.taskRouteKeyHash);
+        skip.put("route_id", ctx.taskRouteKeyHash);
         skip.put("reason", reason);
         trace.event("task_map_generation_skipped", skip);
     }
@@ -784,7 +774,7 @@ public class CortexFsmEngine {
             String prompt = buildTaskMapPrunePrompt(record);
             Map<String, Object> promptEv = new LinkedHashMap<>();
             promptEv.put("task_id", ctx.taskId);
-            promptEv.put("task_key_hash", ctx.taskRouteKeyHash);
+            promptEv.put("route_id", ctx.taskRouteKeyHash);
             promptEv.put("prompt", prompt);
             trace.event("task_map_prune_prompt", promptEv);
 
@@ -792,14 +782,14 @@ public class CortexFsmEngine {
             String raw = llmClient.chatOnce(cfg, null, prompt, null, 10000, 60000);
             Map<String, Object> respEv = new LinkedHashMap<>();
             respEv.put("task_id", ctx.taskId);
-            respEv.put("task_key_hash", ctx.taskRouteKeyHash);
+            respEv.put("route_id", ctx.taskRouteKeyHash);
             respEv.put("response", raw != null && raw.length() > 2000 ? raw.substring(0, 2000) + "..." : raw);
             trace.event("task_map_prune_response", respEv);
             return parseDeleteIds(raw);
         } catch (Exception e) {
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("task_id", ctx.taskId);
-            ev.put("task_key_hash", ctx.taskRouteKeyHash);
+            ev.put("route_id", ctx.taskRouteKeyHash);
             ev.put("err", String.valueOf(e));
             trace.event("task_map_prune_parse_error", ev);
             return Collections.emptySet();
@@ -883,7 +873,7 @@ public class CortexFsmEngine {
         }
         Map<String, Object> ev = new LinkedHashMap<>();
         ev.put("task_id", ctx.taskId);
-        ev.put("task_key_hash", ctx.taskRouteKeyHash);
+        ev.put("route_id", ctx.taskRouteKeyHash);
         ev.put("action_id", action.actionId);
         ev.put("sub_task_id", action.subTaskId);
         ev.put("turn", action.turn);
@@ -904,16 +894,23 @@ public class CortexFsmEngine {
                 double xf = Double.parseDouble(cmd.args.get(0));
                 double yf = Double.parseDouble(cmd.args.get(1));
                 int[] mapped = mapPointByProbe(ctx, xf, yf);
+                TaskMapLocalTapBuilder.LocalTapPayload payload = TaskMapLocalTapBuilder.materializeTap(
+                        mapped[0],
+                        mapped[1],
+                        nodes,
+                        new TaskMapLocalTapBuilder.LocatorUniquenessGate() {
+                            @Override
+                            public boolean isAccepted(Map<String, Object> locator) {
+                                return isUniqueTaskMapLocator(locator);
+                            }
+                        }
+                );
+                action.locator.clear();
+                action.locator.putAll(payload.locator);
+                action.containerProbe.clear();
+                action.containerProbe.putAll(payload.containerProbe);
                 action.tapPoint.clear();
-                action.tapPoint.add(mapped[0]);
-                action.tapPoint.add(mapped[1]);
-                Map<String, Object> locator = RuntimeLocatorBuilder.buildLocator(mapped[0], mapped[1], nodes);
-                if (isUniqueTaskMapLocator(locator)) {
-                    action.locator.putAll(locator);
-                } else {
-                    action.locator.clear();
-                    action.containerProbe.putAll(RuntimeLocatorBuilder.buildContainerProbe(mapped[0], mapped[1], nodes));
-                }
+                action.tapPoint.addAll(payload.tapPoint);
                 return;
             }
             if ("SWIPE".equals(cmd.op) && cmd.args.size() >= 4) {
@@ -1091,7 +1088,7 @@ public class CortexFsmEngine {
         Map<String, Object> ev = new LinkedHashMap<>();
         ev.put("task_id", ctx.taskId);
         ev.put("state", State.TASK_MAP_ROOT_LOOKUP.name());
-        ev.put("task_key_hash", ctx.taskRouteKeyHash);
+        ev.put("route_id", ctx.taskRouteKeyHash);
         ev.put("task_map_mode", ctx.taskMapMode);
         trace.event("task_map_root_lookup", ev);
 
@@ -1105,7 +1102,7 @@ public class CortexFsmEngine {
             ctx.taskMapRootHit = false;
             Map<String, Object> miss = new LinkedHashMap<>();
             miss.put("task_id", ctx.taskId);
-            miss.put("task_key_hash", ctx.taskRouteKeyHash);
+            miss.put("route_id", ctx.taskRouteKeyHash);
             miss.put("reason", map == null ? "map_missing" : "map_unusable");
             trace.event("task_map_root_lookup_miss", miss);
             return State.TASK_DECOMPOSE;
@@ -1116,13 +1113,13 @@ public class CortexFsmEngine {
         ctx.subTasks.clear();
         ctx.subTasks.addAll(TaskMapSubTaskRestorer.restore(map));
         ctx.taskMapBlackboard.clear();
-        ctx.taskMapBlackboard.put("task_key_hash", ctx.taskRouteKeyHash);
+        ctx.taskMapBlackboard.put("route_id", ctx.taskRouteKeyHash);
         ctx.taskMapBlackboard.put("segment_count", map.segments.size());
         ctx.taskMapBlackboard.put("step_count", map.stepCount());
 
         Map<String, Object> hit = new LinkedHashMap<>();
         hit.put("task_id", ctx.taskId);
-        hit.put("task_key_hash", ctx.taskRouteKeyHash);
+        hit.put("route_id", ctx.taskRouteKeyHash);
         hit.put("segment_count", map.segments.size());
         hit.put("step_count", map.stepCount());
         trace.event("task_map_root_lookup_hit", hit);
@@ -1252,6 +1249,19 @@ public class CortexFsmEngine {
 
     private static String stringOrEmpty(Object o) {
         return o == null ? "" : String.valueOf(o).trim();
+    }
+
+    private static String firstNonEmpty(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            String normalized = stringOrEmpty(value);
+            if (!normalized.isEmpty()) {
+                return normalized;
+            }
+        }
+        return "";
     }
 
     private static boolean toBool(Object o, boolean def) {
@@ -2474,9 +2484,14 @@ public class CortexFsmEngine {
         try {
             String op = step.op != null ? step.op.trim().toUpperCase(Locale.ROOT) : "";
             if ("TAP".equals(op)) {
+                TaskMap.Step executableStep = ensureSemanticTapMaterialized(ctx, pkg, step, summary);
+                if (executableStep == null) {
+                    trace.event("fsm_routing_task_map_step_end", summary);
+                    return new RouteStepExec(summary, false);
+                }
                 TaskMapResolvedPoint point = index == 0
-                        ? resolveFirstTaskMapTapPointWithWindow(ctx, pkg, step, resolver, index)
-                        : resolveRegularTaskMapTapPoint(ctx, pkg, step, resolver, index);
+                        ? resolveFirstTaskMapTapPointWithWindow(ctx, pkg, executableStep, resolver, index)
+                        : resolveRegularTaskMapTapPoint(ctx, pkg, executableStep, resolver, index);
                 boolean ok = execTapAtPoint(ctx, point.x, point.y);
                 summary.put("picked_stage", point.pickedStage);
                 summary.put("picked_bounds", point.bounds != null ? point.bounds.toList() : null);
@@ -2516,6 +2531,181 @@ public class CortexFsmEngine {
             trace.event("fsm_routing_task_map_step_end", summary);
             return new RouteStepExec(summary, false);
         }
+    }
+
+    private TaskMap.Step ensureSemanticTapMaterialized(
+            Context ctx,
+            String pkg,
+            TaskMap.Step step,
+            Map<String, Object> summary
+    ) {
+        if (step == null) {
+            if (summary != null) {
+                summary.put("result", "invalid_step");
+                summary.put("reason", "null_step");
+            }
+            return null;
+        }
+        if (!PortableTaskRouteCodec.PORTABLE_KIND_SEMANTIC_TAP.equals(stringOrEmpty(step.portableKind))) {
+            return step;
+        }
+        String adaptationStatus = stringOrEmpty(step.adaptationStatus);
+        if (PortableTaskRouteCodec.ADAPTATION_STATUS_FAILED.equals(adaptationStatus)) {
+            if (summary != null) {
+                summary.put("result", "semantic_adaptation_failed");
+                summary.put("reason", firstNonEmpty(step.adaptationError, "semantic_adaptation_failed"));
+            }
+            return null;
+        }
+        if (!PortableTaskRouteCodec.ADAPTATION_STATUS_PENDING.equals(adaptationStatus)) {
+            return step;
+        }
+        try {
+            byte[] screenshotPng = captureScreenshotPng();
+            if (screenshotPng == null || screenshotPng.length == 0) {
+                String err = "semantic_adaptation_screenshot_missing";
+                persistSemanticAdaptationFailure(ctx, step, err);
+                if (summary != null) {
+                    summary.put("result", "semantic_adaptation_failed");
+                    summary.put("reason", err);
+                }
+                return null;
+            }
+            List<DumpActionsParser.ActionNode> nodes = captureDumpActionNodes();
+            SemanticStepMaterializer.Result materialized = SemanticStepMaterializer.materialize(
+                    llmClient,
+                    LlmConfig.loadDefault(),
+                    trace,
+                    ctx.taskId,
+                    ctx.taskRouteKeyHash,
+                    ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "",
+                    pkg,
+                    step,
+                    screenshotPng,
+                    nodes,
+                    new TaskMapLocalTapBuilder.LocatorUniquenessGate() {
+                        @Override
+                        public boolean isAccepted(Map<String, Object> locator) {
+                            return isUniqueTaskMapLocator(locator);
+                        }
+                    }
+            );
+            if (!materialized.ok || materialized.materializedStep == null) {
+                String err = firstNonEmpty(materialized.error, "semantic_adaptation_failed");
+                persistSemanticAdaptationFailure(ctx, step, err);
+                if (summary != null) {
+                    summary.put("result", "semantic_adaptation_failed");
+                    summary.put("reason", err);
+                }
+                return null;
+            }
+            boolean saved = taskMapStore.saveMaterializedStep(
+                    ctx.taskRouteKeyHash,
+                    ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "",
+                    step.stepId,
+                    materialized.materializedStep
+            );
+            if (!saved) {
+                String err = "semantic_materialized_step_save_failed";
+                persistSemanticAdaptationFailure(ctx, step, err);
+                if (summary != null) {
+                    summary.put("result", "semantic_adaptation_failed");
+                    summary.put("reason", err);
+                }
+                return null;
+            }
+            copyTaskMapStep(step, materialized.materializedStep);
+            if (summary != null) {
+                summary.put("adaptation_status", step.adaptationStatus);
+                summary.put("portable_kind", step.portableKind);
+            }
+            Map<String, Object> ev = new LinkedHashMap<>();
+            ev.put("task_id", ctx.taskId);
+            ev.put("route_id", ctx.taskRouteKeyHash);
+            ev.put("segment_id", ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+            ev.put("step_id", step.stepId);
+            ev.put("portable_kind", step.portableKind);
+            ev.put("adaptation_status", step.adaptationStatus);
+            trace.event("task_map_semantic_adaptation_materialized", ev);
+            return step;
+        } catch (Exception e) {
+            String err = "semantic_adaptation_error:" + e;
+            persistSemanticAdaptationFailure(ctx, step, err);
+            if (summary != null) {
+                summary.put("result", "semantic_adaptation_failed");
+                summary.put("reason", err);
+            }
+            return null;
+        }
+    }
+
+    private void persistSemanticAdaptationFailure(Context ctx, TaskMap.Step step, String error) {
+        long attemptedAtMs = System.currentTimeMillis();
+        taskMapStore.markSemanticStepAdaptationFailed(
+                ctx != null ? ctx.taskRouteKeyHash : "",
+                ctx != null && ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "",
+                step != null ? step.stepId : "",
+                error,
+                attemptedAtMs
+        );
+        if (step != null) {
+            step.portableKind = PortableTaskRouteCodec.PORTABLE_KIND_SEMANTIC_TAP;
+            step.adaptationStatus = PortableTaskRouteCodec.ADAPTATION_STATUS_FAILED;
+            step.adaptationError = error;
+            step.adaptationAttemptedAtMs = attemptedAtMs;
+            step.locator.clear();
+            step.containerProbe.clear();
+            step.tapPoint.clear();
+            step.fallbackPoint = "";
+        }
+        Map<String, Object> ev = new LinkedHashMap<>();
+        ev.put("task_id", ctx != null ? ctx.taskId : "");
+        ev.put("route_id", ctx != null ? ctx.taskRouteKeyHash : "");
+        ev.put("segment_id", ctx != null && ctx.currentTaskMapSegment != null ? ctx.currentTaskMapSegment.segmentId : "");
+        ev.put("step_id", step != null ? step.stepId : "");
+        ev.put("reason", error);
+        trace.event("task_map_semantic_adaptation_failed", ev);
+    }
+
+    private byte[] captureScreenshotPng() {
+        try {
+            byte[] shotResp = perception != null ? perception.handleScreenshot() : null;
+            if (shotResp != null && shotResp.length > 1 && shotResp[0] != 0x00) {
+                return Arrays.copyOfRange(shotResp, 1, shotResp.length);
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private void copyTaskMapStep(TaskMap.Step target, TaskMap.Step src) {
+        if (target == null || src == null) {
+            return;
+        }
+        target.stepId = src.stepId;
+        target.sourceActionId = src.sourceActionId;
+        target.op = src.op;
+        target.args.clear();
+        target.args.addAll(src.args);
+        target.locator.clear();
+        target.locator.putAll(src.locator);
+        target.containerProbe.clear();
+        target.containerProbe.putAll(src.containerProbe);
+        target.tapPoint.clear();
+        target.tapPoint.addAll(src.tapPoint);
+        target.swipe.clear();
+        target.swipe.putAll(src.swipe);
+        target.fallbackPoint = src.fallbackPoint;
+        target.semanticNote = src.semanticNote;
+        target.expected = src.expected;
+        target.portableKind = src.portableKind;
+        target.semanticDescriptor.clear();
+        target.semanticDescriptor.putAll(src.semanticDescriptor);
+        target.adaptationStatus = src.adaptationStatus;
+        target.adaptationError = src.adaptationError;
+        target.adaptationAttemptedAtMs = src.adaptationAttemptedAtMs;
+        target.materializedFromStepId = src.materializedFromStepId;
+        target.materializedAtMs = src.materializedAtMs;
     }
 
     private TaskMapResolvedPoint resolveTaskMapTapPoint(TaskMap.Step step, LocatorResolver resolver) throws Exception {
@@ -4503,7 +4693,7 @@ public class CortexFsmEngine {
             ctx.taskRouteRecordStarted = true;
             Map<String, Object> beginEv = new LinkedHashMap<>();
             beginEv.put("task_id", ctx.taskId);
-            beginEv.put("task_key_hash", ctx.taskRouteKeyHash);
+            beginEv.put("route_id", ctx.taskRouteKeyHash);
             beginEv.put("source", ctx.source);
             trace.event("task_route_record_begin", beginEv);
         }
@@ -5086,6 +5276,18 @@ public class CortexFsmEngine {
         }
 
         return new SkipCandidate(x, y, score, label);
+    }
+
+    private static String resolveRouteId(String source, String sourceId, String taskId) {
+        String src = stringOrEmpty(source);
+        String sid = stringOrEmpty(sourceId);
+        if ("schedule".equals(src) && !sid.isEmpty()) {
+            return "schedule:" + sid;
+        }
+        if ("notify_trigger".equals(src) && !sid.isEmpty()) {
+            return "notify:" + sid;
+        }
+        return stringOrEmpty(taskId);
     }
 
     private static int parseIntLike(Object o, int def) {

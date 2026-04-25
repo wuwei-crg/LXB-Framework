@@ -12,7 +12,7 @@ import java.util.Set;
 
 public final class TaskMapStore {
 
-    private static final String DEFAULT_ROOT = "/data/local/tmp/lxb/task_maps";
+    private static final String DEFAULT_ROOT = "/sdcard/Android/data/com.example.lxb_ignition/files/lxb_state/task_maps";
 
     private final File rootDir;
     private final File recordsDir;
@@ -87,6 +87,53 @@ public final class TaskMapStore {
         return ok;
     }
 
+    public boolean saveMaterializedStep(
+            String taskKeyHash,
+            String segmentId,
+            String stepId,
+            TaskMap.Step materializedStep
+    ) {
+        if (materializedStep == null) {
+            return false;
+        }
+        TaskMap map = loadMap(taskKeyHash);
+        if (map == null) {
+            return false;
+        }
+        TaskMap.Step target = findStep(map, segmentId, stepId);
+        if (target == null) {
+            return false;
+        }
+        copyStep(target, materializedStep);
+        return saveMap(map);
+    }
+
+    public boolean markSemanticStepAdaptationFailed(
+            String taskKeyHash,
+            String segmentId,
+            String stepId,
+            String error,
+            long attemptedAtMs
+    ) {
+        TaskMap map = loadMap(taskKeyHash);
+        if (map == null) {
+            return false;
+        }
+        TaskMap.Step target = findStep(map, segmentId, stepId);
+        if (target == null) {
+            return false;
+        }
+        target.portableKind = PortableTaskRouteCodec.PORTABLE_KIND_SEMANTIC_TAP;
+        target.adaptationStatus = PortableTaskRouteCodec.ADAPTATION_STATUS_FAILED;
+        target.adaptationError = normalize(error);
+        target.adaptationAttemptedAtMs = attemptedAtMs;
+        target.locator.clear();
+        target.containerProbe.clear();
+        target.tapPoint.clear();
+        target.fallbackPoint = "";
+        return saveMap(map);
+    }
+
     public boolean deleteMap(String taskKeyHash) {
         boolean deleted = mapFile(taskKeyHash).delete();
         updateIndexEntry(taskKeyHash, null, null, null, null);
@@ -98,7 +145,7 @@ public final class TaskMapStore {
         TaskMap map = loadMap(taskKeyHash);
         TaskRouteRecord success = loadLatestSuccessRecord(taskKeyHash);
         TaskRouteRecord attempt = loadLatestAttemptRecord(taskKeyHash);
-        out.put("task_key_hash", normalize(taskKeyHash));
+        out.put("route_id", normalize(taskKeyHash));
         out.put("has_map", map != null);
         out.put("has_latest_success_record", success != null);
         out.put("has_latest_attempt_record", attempt != null);
@@ -132,79 +179,13 @@ public final class TaskMapStore {
 
     public Map<String, Object> getTaskKeySummary(String taskKeyHash) {
         Map<String, Object> out = new LinkedHashMap<String, Object>();
-        out.put("task_key_hash", normalize(taskKeyHash));
+        out.put("route_id", normalize(taskKeyHash));
         out.put("has_map", hasMap(taskKeyHash));
         TaskRouteRecord success = loadLatestSuccessRecord(taskKeyHash);
         TaskRouteRecord attempt = loadLatestAttemptRecord(taskKeyHash);
         out.put("has_latest_success_record", success != null);
         out.put("has_latest_attempt_record", attempt != null);
         return out;
-    }
-
-    public String resolveExistingKeyHash(TaskRouteKey key, String rootTask) {
-        if (key == null) {
-            return "";
-        }
-        String direct = normalize(key.taskKeyHash);
-        if (!direct.isEmpty() && hasAnyArtifact(direct)) {
-            return direct;
-        }
-        return findCompatibleKeyHash(
-                direct,
-                key.source,
-                key.sourceId,
-                key.sourceConfigHash,
-                key.packageName,
-                rootTask
-        );
-    }
-
-    public String findCompatibleKeyHash(
-            String requestedKeyHash,
-            String source,
-            String sourceId,
-            String sourceConfigHash,
-            String packageName,
-            String rootTask
-    ) {
-        String direct = normalize(requestedKeyHash);
-        if (!direct.isEmpty() && hasAnyArtifact(direct)) {
-            return direct;
-        }
-        String normalizedSource = normalize(source);
-        String normalizedSourceId = normalize(sourceId);
-        String normalizedConfigHash = normalize(sourceConfigHash);
-        String normalizedPackage = normalize(packageName);
-        String normalizedRootTask = normalize(rootTask);
-
-        String hit = findCompatibleMapKey(
-                normalizedSource,
-                normalizedSourceId,
-                normalizedConfigHash,
-                normalizedPackage
-        );
-        if (!hit.isEmpty()) {
-            return hit;
-        }
-        hit = findCompatibleRecordKey(
-                ".latest_success_record.json",
-                normalizedSource,
-                normalizedSourceId,
-                normalizedConfigHash,
-                normalizedPackage,
-                normalizedRootTask
-        );
-        if (!hit.isEmpty()) {
-            return hit;
-        }
-        return findCompatibleRecordKey(
-                ".latest_attempt_record.json",
-                normalizedSource,
-                normalizedSourceId,
-                normalizedConfigHash,
-                normalizedPackage,
-                normalizedRootTask
-        );
     }
 
     private void updateIndex(TaskMap map) {
@@ -224,7 +205,7 @@ public final class TaskMapStore {
                 return;
             }
             Map<String, Object> row = new LinkedHashMap<String, Object>();
-            row.put("task_key_hash", taskKeyHash);
+            row.put("route_id", taskKeyHash);
             row.put("source", source != null ? source : "");
             row.put("source_id", sourceId != null ? sourceId : "");
             row.put("package_name", packageName != null ? packageName : "");
@@ -285,117 +266,15 @@ public final class TaskMapStore {
     }
 
     private File mapFile(String taskKeyHash) {
-        return new File(mapsDir, normalize(taskKeyHash) + ".task_map.json");
+        return new File(mapsDir, safeStorageName(taskKeyHash) + ".task_map.json");
     }
 
     private File successRecordFile(String taskKeyHash) {
-        return new File(recordsDir, normalize(taskKeyHash) + ".latest_success_record.json");
+        return new File(recordsDir, safeStorageName(taskKeyHash) + ".latest_success_record.json");
     }
 
     private File attemptRecordFile(String taskKeyHash) {
-        return new File(recordsDir, normalize(taskKeyHash) + ".latest_attempt_record.json");
-    }
-
-    private String findCompatibleMapKey(
-            String source,
-            String sourceId,
-            String sourceConfigHash,
-            String packageName
-    ) {
-        File[] files = mapsDir.listFiles();
-        if (files == null || files.length == 0) {
-            return "";
-        }
-        for (File file : files) {
-            if (file == null || !file.isFile() || !file.getName().endsWith(".task_map.json")) {
-                continue;
-            }
-            TaskMap map = TaskMap.fromObject(loadJson(file));
-            if (map == null) {
-                continue;
-            }
-            if (!matchesMeta(source, map.source)) {
-                continue;
-            }
-            if (!matchesMeta(sourceId, map.sourceId)) {
-                continue;
-            }
-            if (!matchesMeta(sourceConfigHash, map.sourceConfigHash)) {
-                continue;
-            }
-            if (!matchesMeta(packageName, map.packageName)) {
-                continue;
-            }
-            String key = normalize(map.taskKeyHash);
-            if (!key.isEmpty()) {
-                return key;
-            }
-            return stripKnownSuffix(file.getName(), ".task_map.json");
-        }
-        return "";
-    }
-
-    private String findCompatibleRecordKey(
-            String suffix,
-            String source,
-            String sourceId,
-            String sourceConfigHash,
-            String packageName,
-            String rootTask
-    ) {
-        File[] files = recordsDir.listFiles();
-        if (files == null || files.length == 0) {
-            return "";
-        }
-        Set<String> seenKeys = new LinkedHashSet<String>();
-        for (File file : files) {
-            if (file == null || !file.isFile() || !file.getName().endsWith(suffix)) {
-                continue;
-            }
-            TaskRouteRecord record = TaskRouteRecord.fromObject(loadJson(file));
-            if (record == null) {
-                continue;
-            }
-            String key = normalize(record.taskKeyHash);
-            if (key.isEmpty()) {
-                key = stripKnownSuffix(file.getName(), suffix);
-            }
-            if (key.isEmpty() || !seenKeys.add(key)) {
-                continue;
-            }
-            if (!matchesMeta(source, record.source)) {
-                continue;
-            }
-            if (!matchesMeta(sourceId, record.sourceId)) {
-                continue;
-            }
-            if (!matchesMeta(sourceConfigHash, record.sourceConfigHash)) {
-                continue;
-            }
-            if (!matchesMeta(packageName, record.packageName)) {
-                continue;
-            }
-            if (!matchesMeta(rootTask, record.rootTask)) {
-                continue;
-            }
-            return key;
-        }
-        return "";
-    }
-
-    private static boolean matchesMeta(String expected, String actual) {
-        String normalizedExpected = normalize(expected);
-        if (normalizedExpected.isEmpty()) {
-            return true;
-        }
-        return normalizedExpected.equals(normalize(actual));
-    }
-
-    private static String stripKnownSuffix(String fileName, String suffix) {
-        if (fileName == null || suffix == null || !fileName.endsWith(suffix)) {
-            return "";
-        }
-        return normalize(fileName.substring(0, fileName.length() - suffix.length()));
+        return new File(recordsDir, safeStorageName(taskKeyHash) + ".latest_attempt_record.json");
     }
 
     private static File resolveRootDir() {
@@ -403,11 +282,93 @@ public final class TaskMapStore {
         if (override != null && !override.trim().isEmpty()) {
             return new File(override.trim());
         }
+        String mapDir = System.getProperty("lxb.map.dir");
+        if (mapDir != null && !mapDir.trim().isEmpty()) {
+            File base = new File(mapDir.trim());
+            File parent = base.getName().equals("maps") ? base.getParentFile() : base;
+            if (parent != null) {
+                return new File(parent, "task_maps");
+            }
+        }
         return new File(DEFAULT_ROOT);
     }
 
     private static String normalize(String s) {
         return s == null ? "" : s.trim();
+    }
+
+    private static String safeStorageName(String id) {
+        String normalized = normalize(id);
+        if (normalized.isEmpty()) {
+            return "empty";
+        }
+        StringBuilder sb = new StringBuilder(normalized.length());
+        boolean changed = false;
+        for (int i = 0; i < normalized.length(); i += 1) {
+            char c = normalized.charAt(i);
+            boolean ok = (c >= 'a' && c <= 'z')
+                    || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9')
+                    || c == '_' || c == '-' || c == '.';
+            if (ok) {
+                sb.append(c);
+            } else {
+                sb.append('_');
+                changed = true;
+            }
+        }
+        String out = sb.toString();
+        if (out.length() > 120) {
+            out = out.substring(0, 80) + "_" + Integer.toHexString(normalized.hashCode());
+            changed = true;
+        }
+        return changed ? out + "_" + Integer.toHexString(normalized.hashCode()) : out;
+    }
+
+    private static TaskMap.Step findStep(TaskMap map, String segmentId, String stepId) {
+        if (map == null || map.segments == null) {
+            return null;
+        }
+        String normalizedSegmentId = normalize(segmentId);
+        String normalizedStepId = normalize(stepId);
+        for (TaskMap.Segment segment : map.segments) {
+            if (segment == null || !normalizedSegmentId.equals(normalize(segment.segmentId))) {
+                continue;
+            }
+            for (TaskMap.Step step : segment.steps) {
+                if (step != null && normalizedStepId.equals(normalize(step.stepId))) {
+                    return step;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void copyStep(TaskMap.Step target, TaskMap.Step src) {
+        target.stepId = src.stepId;
+        target.sourceActionId = src.sourceActionId;
+        target.op = src.op;
+        target.args.clear();
+        target.args.addAll(src.args);
+        target.locator.clear();
+        target.locator.putAll(src.locator);
+        target.containerProbe.clear();
+        target.containerProbe.putAll(src.containerProbe);
+        target.tapPoint.clear();
+        target.tapPoint.addAll(src.tapPoint);
+        target.swipe.clear();
+        target.swipe.putAll(src.swipe);
+        target.fallbackPoint = src.fallbackPoint;
+        target.semanticNote = src.semanticNote;
+        target.expected = src.expected;
+        target.portableKind = src.portableKind;
+        target.semanticDescriptor.clear();
+        target.semanticDescriptor.putAll(src.semanticDescriptor);
+        target.adaptationStatus = src.adaptationStatus;
+        target.adaptationError = src.adaptationError;
+        target.adaptationAttemptedAtMs = src.adaptationAttemptedAtMs;
+        target.materializedFromStepId = src.materializedFromStepId;
+        target.materializedAtMs = src.materializedAtMs;
     }
 
     private void writeJsonAtomically(File file, String json) throws Exception {

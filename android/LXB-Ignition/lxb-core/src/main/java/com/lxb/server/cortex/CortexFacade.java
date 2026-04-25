@@ -881,7 +881,7 @@ public class CortexFacade {
             if (action.isEmpty()) {
                 action = "get";
             }
-            String taskKeyHash = stringOrEmpty(req.get("task_key_hash"));
+            String taskKeyHash = stringOrEmpty(req.get("route_id"));
             String taskId = stringOrEmpty(req.get("task_id"));
             String source = stringOrEmpty(req.get("source"));
             String sourceId = stringOrEmpty(req.get("source_id"));
@@ -898,7 +898,8 @@ public class CortexFacade {
                 out = taskManager.deleteTaskMap(taskKeyHash, taskId, source, sourceId, packageName, userTask, userPlaybook, mode);
                 if (toBool(out.get("ok"), false)) {
                     Map<String, Object> ev = new LinkedHashMap<>();
-                    ev.put("task_key_hash", out.get("task_key_hash"));
+                    ev.put("route_id", out.get("route_id"));
+            ev.put("route_id", out.get("route_id"));
                     trace.event("task_map_deleted", ev);
                 }
             } else if ("save_manual".equals(action)) {
@@ -916,6 +917,22 @@ public class CortexFacade {
                     }
                 }
                 out = taskManager.saveManualTaskMap(taskKeyHash, taskId, deleteActionIds, finishAfterReplay);
+            } else if ("export_portable".equals(action)) {
+                out = taskManager.exportPortableTaskMap(
+                        taskKeyHash,
+                        taskId,
+                        source,
+                        sourceId,
+                        packageName,
+                        userTask,
+                        userPlaybook,
+                        mode
+                );
+            } else if ("import_portable".equals(action)) {
+                String targetTaskKeyHash = stringOrEmpty(req.get("target_route_id"));
+                String targetPackageName = stringOrEmpty(req.get("target_package_name"));
+                String bundleJson = stringOrEmpty(req.get("bundle_json"));
+                out = taskManager.importPortableTaskMap(targetTaskKeyHash, targetPackageName, bundleJson);
             } else if ("set_mode".equals(action)) {
                 out = taskManager.setTaskMapMode(source, sourceId, mode, taskId);
             } else {
@@ -925,7 +942,8 @@ public class CortexFacade {
             Map<String, Object> ev = new LinkedHashMap<>();
             ev.put("action", action);
             ev.put("ok", toBool(out.get("ok"), false));
-            ev.put("task_key_hash", out.get("task_key_hash"));
+            ev.put("route_id", out.get("route_id"));
+            ev.put("route_id", out.get("route_id"));
             trace.event("cortex_task_map_api", ev);
             return ok(Json.stringify(out));
         } catch (Exception e) {
@@ -1056,6 +1074,11 @@ public class CortexFacade {
 
     private static String stringOrEmpty(Object o) {
         return o == null ? "" : String.valueOf(o).trim();
+    }
+
+    private static String firstNonEmpty(String a, String b) {
+        String av = stringOrEmpty(a);
+        return !av.isEmpty() ? av : stringOrEmpty(b);
     }
 
     private static int toInt(Object o, int defaultValue) {

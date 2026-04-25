@@ -1,6 +1,7 @@
 package com.lxb.server.cortex;
 
 import com.lxb.server.cortex.json.Json;
+import com.lxb.server.cortex.taskmap.PortableTaskRouteCodec;
 import com.lxb.server.cortex.taskmap.TaskMap;
 import com.lxb.server.cortex.taskmap.TaskMapAssembler;
 import com.lxb.server.cortex.taskmap.TaskMapStore;
@@ -10,7 +11,6 @@ import com.lxb.server.cortex.taskmap.TaskRouteRecord;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
@@ -221,7 +221,7 @@ public class CortexTaskManager {
                 useMapOverride,
                 taskMapMode,
                 "",
-                buildManualConfigHash(userTask, packageName, mapPath, startPage, traceMode, traceUdpPort, userPlaybook, record, useMapOverride, taskMapMode)
+                ""
         );
     }
 
@@ -296,7 +296,7 @@ public class CortexTaskManager {
         instance.packageName = packageName != null ? packageName.trim() : "";
         instance.taskMapMode = taskMapMode != null ? taskMapMode.trim() : "off";
         instance.sourceId = sourceId != null ? sourceId.trim() : "";
-        instance.sourceConfigHash = sourceConfigHash != null ? sourceConfigHash.trim() : "";
+        instance.sourceConfigHash = "";
         String taskKey = buildTaskMemoryKey(instance.userTask);
         instance.taskMemoryKey = taskKey;
         Map<String, Object> memoryHint = instance.userPlaybook.isEmpty()
@@ -577,7 +577,7 @@ public class CortexTaskManager {
                                     null,
                                     def.taskMapMode,
                                     def.scheduleId,
-                                    buildScheduleConfigHash(def)
+                                    ""
                             );
                         } catch (Exception ignored) {
                             // Keep scheduler resilient; failures are reflected by missing task rows.
@@ -1060,17 +1060,15 @@ public class CortexTaskManager {
         out.put("source", inst.source);
         out.put("schedule_id", inst.scheduleId);
         out.put("source_id", inst.sourceId);
-        out.put("source_config_hash", inst.sourceConfigHash);
         out.put("task_map_mode", inst.taskMapMode);
         out.put("task_memory_key", inst.taskMemoryKey);
         out.put("memory_applied", inst.memoryApplied);
         out.put("record_enabled", inst.recordEnabled);
         out.put("record_started", inst.recordStarted);
         out.put("record_file", inst.recordFilePath);
-        TaskRouteKey routeKey = buildTaskRouteKey(inst);
-        out.put("task_key", routeKey.canonicalJson);
-        out.put("task_key_hash", routeKey.taskKeyHash);
-        out.put("has_task_map", taskMapStore.hasMap(routeKey.taskKeyHash));
+        String routeId = resolveRouteId(inst.source, inst.sourceId, inst.taskId);
+        out.put("route_id", routeId);
+        out.put("has_task_map", taskMapStore.hasMap(routeId));
         out.put("task_summary", inst.taskSummary);
         if (inst.resultSummary != null) {
             out.put("summary", inst.resultSummary);
@@ -1112,27 +1110,15 @@ public class CortexTaskManager {
             row.put("source", inst.source);
             row.put("schedule_id", inst.scheduleId);
             row.put("source_id", inst.sourceId);
-            row.put("source_config_hash", inst.sourceConfigHash);
             row.put("task_map_mode", inst.taskMapMode);
             row.put("task_memory_key", inst.taskMemoryKey);
             row.put("memory_applied", inst.memoryApplied);
             row.put("record_enabled", inst.recordEnabled);
             row.put("record_started", inst.recordStarted);
             row.put("record_file", inst.recordFilePath);
-            TaskRouteKey routeKey = buildTaskRouteKey(inst);
-            String persistedKeyHash = resolvePersistedTaskKeyHash(
-                    routeKey.taskKeyHash,
-                    inst.taskId,
-                    inst.source,
-                    inst.sourceId,
-                    inst.packageName,
-                    inst.userTask,
-                    inst.userPlaybook,
-                    inst.taskMapMode
-            );
-            row.put("task_key", routeKey.canonicalJson);
-            row.put("task_key_hash", persistedKeyHash.isEmpty() ? routeKey.taskKeyHash : persistedKeyHash);
-            row.put("has_task_map", taskMapStore.hasMap(persistedKeyHash.isEmpty() ? routeKey.taskKeyHash : persistedKeyHash));
+            String routeId = resolveRouteId(inst.source, inst.sourceId, inst.taskId);
+            row.put("route_id", routeId);
+            row.put("has_task_map", taskMapStore.hasMap(routeId));
             row.put("task_summary", inst.taskSummary);
             result.add(row);
         }
@@ -1159,6 +1145,7 @@ public class CortexTaskManager {
         }
         out.put("ok", true);
         out.putAll(taskMapStore.getStatus(resolved));
+        out.put("route_id", resolved);
         TaskInstance inst = taskId != null && !taskId.trim().isEmpty() ? taskRegistry.get(taskId.trim()) : null;
         out.put("mode", inst != null && inst.taskMapMode != null && !inst.taskMapMode.isEmpty() ? inst.taskMapMode : normalizeTaskMapMode(taskMapMode));
         if (inst != null) {
@@ -1204,7 +1191,8 @@ public class CortexTaskManager {
         boolean deleted = taskMapStore.deleteMap(resolved);
         out.put("ok", true);
         out.put("deleted", deleted);
-        out.put("task_key_hash", resolved);
+        out.put("route_id", resolved);
+        out.put("route_id", resolved); // legacy alias.
         return out;
     }
 
@@ -1251,12 +1239,159 @@ public class CortexTaskManager {
         boolean saved = taskMapStore.saveMap(map);
         out.put("ok", saved);
         out.put("saved", saved);
-        out.put("task_key_hash", resolved);
+        out.put("route_id", resolved);
+        out.put("route_id", resolved); // legacy alias.
         out.put("segment_count", map.segments.size());
         out.put("step_count", map.stepCount());
         out.put("finish_after_replay", map.finishAfterReplay);
         out.put("record_kind", recordKind);
         return out;
+    }
+
+    public Map<String, Object> exportPortableTaskMap(
+            String taskKeyHash,
+            String taskId,
+            String source,
+            String sourceId,
+            String packageName,
+            String userTask,
+            String userPlaybook,
+            String taskMapMode
+    ) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        String resolved = resolvePersistedTaskKeyHash(taskKeyHash, taskId, source, sourceId, packageName, userTask, userPlaybook, taskMapMode);
+        if (resolved.isEmpty()) {
+            out.put("ok", false);
+            out.put("err", "task_key_unresolved");
+            return out;
+        }
+        TaskMap map = taskMapStore.loadMap(resolved);
+        if (map == null) {
+            out.put("ok", false);
+            out.put("err", "task_map_missing");
+            return out;
+        }
+        TaskRouteRecord record = taskMapStore.loadLatestAttemptRecord(resolved);
+        if (record == null || record.actions.isEmpty()) {
+            record = taskMapStore.loadLatestSuccessRecord(resolved);
+        }
+        PortableTaskRouteCodec.ExportResult exported = PortableTaskRouteCodec.exportPortable(map, record);
+        out.put("ok", true);
+        out.put("route_id", resolved);
+        out.put("route_id", resolved); // legacy alias.
+        out.put("schema", PortableTaskRouteCodec.PORTABLE_SCHEMA);
+        out.put("bundle_json", Json.stringify(exported.bundle));
+        out.put("locator_step_count", exported.locatorStepCount);
+        out.put("semantic_step_count", exported.semanticStepCount);
+        return out;
+    }
+
+    public Map<String, Object> importPortableTaskMap(
+            String targetTaskKeyHash,
+            String targetPackageName,
+            String bundleJson
+    ) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        String normalizedKey = stringOrEmpty(targetTaskKeyHash);
+        String normalizedPackage = stringOrEmpty(targetPackageName);
+        if (bundleJson == null || bundleJson.trim().isEmpty()) {
+            out.put("ok", false);
+            out.put("err", "portable_bundle_missing");
+            return out;
+        }
+        try {
+            if (normalizedKey.isEmpty()) {
+                normalizedKey = UUID.randomUUID().toString();
+            }
+            PortableTaskRouteCodec.ImportResult imported = PortableTaskRouteCodec.importPortable(
+                    normalizedKey,
+                    normalizedPackage,
+                    bundleJson
+            );
+            if (imported.map == null || !imported.map.isUsable()) {
+                out.put("ok", false);
+                out.put("err", "portable_import_unusable_map");
+                return out;
+            }
+            boolean saved = taskMapStore.saveMap(imported.map);
+            if (saved) {
+                registerImportedTaskRoute(normalizedKey, imported, normalizedPackage);
+            }
+            out.put("ok", saved);
+            out.put("saved", saved);
+            out.put("task_id", normalizedKey);
+            out.put("route_id", normalizedKey);
+            out.put("route_id", normalizedKey); // legacy alias.
+            out.put("task_info", new LinkedHashMap<String, Object>(imported.taskInfo));
+            out.put("pending_adaptation_count", imported.pendingAdaptationCount);
+            out.put("materialized_count", imported.executableImportCount);
+            if (!saved) {
+                out.put("err", "portable_import_save_failed");
+            }
+            return out;
+        } catch (Exception e) {
+            out.put("ok", false);
+            out.put("err", String.valueOf(e.getMessage() != null ? e.getMessage() : e));
+            return out;
+        }
+    }
+
+
+    private void registerImportedTaskRoute(String taskId, PortableTaskRouteCodec.ImportResult imported, String requestedPackage) {
+        String id = stringOrEmpty(taskId);
+        if (id.isEmpty() || imported == null) {
+            return;
+        }
+        Map<String, Object> taskInfo = imported.taskInfo != null ? imported.taskInfo : new LinkedHashMap<String, Object>();
+        TaskInstance inst = taskRegistry.get(id);
+        if (inst == null) {
+            inst = new TaskInstance();
+            inst.taskId = id;
+            inst.createdAt = System.currentTimeMillis();
+            synchronized (taskOrder) {
+                taskOrder.addLast(id);
+                while (taskOrder.size() > MAX_TASKS) {
+                    String evictId = taskOrder.pollFirst();
+                    if (evictId != null && !id.equals(evictId)) {
+                        taskRegistry.remove(evictId);
+                    }
+                }
+            }
+        }
+        inst.userTask = firstNonEmpty(
+                stringOrEmpty(taskInfo.get("user_task")),
+                imported.map != null && !imported.map.segments.isEmpty() ? imported.map.segments.get(0).subTaskDescription : ""
+        );
+        inst.packageName = firstNonEmpty(stringOrEmpty(requestedPackage), stringOrEmpty(taskInfo.get("package_name")));
+        inst.packageLabel = stringOrEmpty(taskInfo.get("package_label"));
+        inst.source = "portable_import";
+        inst.sourceId = firstNonEmpty(
+                stringOrEmpty(taskInfo.get("route_id")),
+                stringOrEmpty(taskInfo.get("task_id"))
+        );
+        inst.sourceConfigHash = "";
+        inst.userPlaybook = "";
+        inst.taskMapMode = "manual";
+        inst.state = TaskState.COMPLETED;
+        inst.finalState = "IMPORTED";
+        inst.reason = "portable_route_imported";
+        inst.finishedAt = System.currentTimeMillis();
+        inst.taskSummary = "Imported portable route: " + inst.userTask;
+        taskRegistry.put(id, inst);
+        saveTaskRunsToDisk();
+    }
+
+    private static String firstNonEmpty(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            String normalized = stringOrEmpty(value);
+            if (!normalized.isEmpty()) {
+                return normalized;
+            }
+        }
+        return "";
     }
 
     public Map<String, Object> setTaskMapMode(String source, String sourceId, String mode, String taskId) {
@@ -1341,37 +1476,11 @@ public class CortexTaskManager {
             return direct;
         }
         String tid = stringOrEmpty(taskId);
-        if (!tid.isEmpty()) {
-            TaskInstance inst = taskRegistry.get(tid);
-            if (inst != null) {
-                return buildTaskRouteKey(inst).taskKeyHash;
-            }
+        String resolved = resolveRouteId(source, sourceId, tid);
+        if (!resolved.isEmpty()) {
+            return resolved;
         }
-        String src = stringOrEmpty(source);
-        String sid = stringOrEmpty(sourceId);
-        if ("schedule".equals(src) && !sid.isEmpty()) {
-            ScheduledTaskDef def = scheduleRegistry.get(sid);
-            if (def != null) {
-                return TaskRouteKey.build(
-                        "schedule",
-                        sid,
-                        buildScheduleConfigHash(def),
-                        def.packageName,
-                        def.userTask,
-                        def.userPlaybook,
-                        stringOrEmpty(def.taskMapMode)
-                ).taskKeyHash;
-            }
-        }
-        return TaskRouteKey.build(
-                src,
-                sid,
-                "",
-                stringOrEmpty(packageName),
-                stringOrEmpty(userTask),
-                stringOrEmpty(userPlaybook),
-                normalizeTaskMapMode(taskMapMode)
-        ).taskKeyHash;
+        return "";
     }
 
     private String resolvePersistedTaskKeyHash(
@@ -1384,114 +1493,19 @@ public class CortexTaskManager {
             String userPlaybook,
             String taskMapMode
     ) {
-        String canonical = resolveTaskKeyHash(taskKeyHash, taskId, source, sourceId, packageName, userTask, userPlaybook, taskMapMode);
-        if (canonical.isEmpty()) {
-            return "";
-        }
-        if (taskMapStore.hasAnyArtifact(canonical)) {
-            return canonical;
-        }
-        TaskInstance inst = null;
-        String tid = stringOrEmpty(taskId);
-        if (!tid.isEmpty()) {
-            inst = taskRegistry.get(tid);
-        }
-        String matchSource = inst != null ? stringOrEmpty(inst.source) : stringOrEmpty(source);
-        String matchSourceId = inst != null ? stringOrEmpty(inst.sourceId) : stringOrEmpty(sourceId);
-        String matchConfigHash = inst != null
-                ? stringOrEmpty(inst.sourceConfigHash)
-                : stringOrEmpty(sourceConfigHashFromInputs(source, sourceId, taskId));
-        String matchPackage = inst != null ? stringOrEmpty(inst.packageName) : stringOrEmpty(packageName);
-        String matchRootTask = inst != null ? stringOrEmpty(inst.userTask) : stringOrEmpty(userTask);
-        String compatible = taskMapStore.findCompatibleKeyHash(
-                canonical,
-                matchSource,
-                matchSourceId,
-                matchConfigHash,
-                matchPackage,
-                matchRootTask
-        );
-        return compatible.isEmpty() ? canonical : compatible;
+        return resolveTaskKeyHash(taskKeyHash, taskId, source, sourceId, packageName, userTask, userPlaybook, taskMapMode);
     }
 
-    private String sourceConfigHashFromInputs(String source, String sourceId, String taskId) {
+    private static String resolveRouteId(String source, String sourceId, String taskId) {
         String src = stringOrEmpty(source);
         String sid = stringOrEmpty(sourceId);
         if ("schedule".equals(src) && !sid.isEmpty()) {
-            ScheduledTaskDef def = scheduleRegistry.get(sid);
-            if (def != null) {
-                return buildScheduleConfigHash(def);
-            }
+            return "schedule:" + sid;
         }
-        String tid = stringOrEmpty(taskId);
-        if (!tid.isEmpty()) {
-            TaskInstance inst = taskRegistry.get(tid);
-            if (inst != null) {
-                return stringOrEmpty(inst.sourceConfigHash);
-            }
+        if ("notify_trigger".equals(src) && !sid.isEmpty()) {
+            return "notify:" + sid;
         }
-        return "";
-    }
-
-    private static String buildScheduleConfigHash(ScheduledTaskDef def) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("user_task=").append(stringOrEmpty(def != null ? def.userTask : null)).append('\n');
-        sb.append("package=").append(stringOrEmpty(def != null ? def.packageName : null)).append('\n');
-        sb.append("map_path=").append(stringOrEmpty(def != null ? def.mapPath : null)).append('\n');
-        sb.append("start_page=").append(stringOrEmpty(def != null ? def.startPage : null)).append('\n');
-        sb.append("trace_mode=").append(stringOrEmpty(def != null ? def.traceMode : null)).append('\n');
-        sb.append("trace_udp_port=").append(def != null && def.traceUdpPort != null ? def.traceUdpPort : 0).append('\n');
-        sb.append("user_playbook=").append(stringOrEmpty(def != null ? def.userPlaybook : null)).append('\n');
-        sb.append("record_enabled=").append(def != null && def.recordEnabled).append('\n');
-        sb.append("repeat_mode=").append(stringOrEmpty(def != null ? def.repeatMode : null)).append('\n');
-        sb.append("repeat_weekdays=").append(def != null ? def.repeatWeekdays : 0).append('\n');
-        sb.append("task_map_mode=").append(stringOrEmpty(def != null ? def.taskMapMode : null)).append('\n');
-        return sha256Hex(sb.toString());
-    }
-
-    private static String buildManualConfigHash(String userTask, String packageName, String mapPath, String startPage, String traceMode, Integer traceUdpPort, String userPlaybook, boolean recordEnabled, Boolean useMapOverride, String taskMapMode) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("user_task=").append(stringOrEmpty(userTask)).append('\n');
-        sb.append("package=").append(stringOrEmpty(packageName)).append('\n');
-        sb.append("map_path=").append(stringOrEmpty(mapPath)).append('\n');
-        sb.append("start_page=").append(stringOrEmpty(startPage)).append('\n');
-        sb.append("trace_mode=").append(stringOrEmpty(traceMode)).append('\n');
-        sb.append("trace_udp_port=").append(traceUdpPort != null ? traceUdpPort.intValue() : 0).append('\n');
-        sb.append("user_playbook=").append(stringOrEmpty(userPlaybook)).append('\n');
-        sb.append("record_enabled=").append(recordEnabled).append('\n');
-        sb.append("use_map_override=").append(useMapOverride != null ? useMapOverride.booleanValue() : true).append('\n');
-        sb.append("task_map_mode=").append(stringOrEmpty(taskMapMode)).append('\n');
-        return sha256Hex(sb.toString());
-    }
-
-    private static String buildNotifyConfigHash(Map<String, Object> rule) {
-        if (rule == null) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        sb.append("package_mode=").append(stringOrEmpty(rule.get("package_mode"))).append('\n');
-        sb.append("package_list=").append(stringOrEmpty(rule.get("package_list"))).append('\n');
-        sb.append("text_mode=").append(stringOrEmpty(rule.get("text_mode"))).append('\n');
-        sb.append("title_pattern=").append(stringOrEmpty(rule.get("title_pattern"))).append('\n');
-        sb.append("body_pattern=").append(stringOrEmpty(rule.get("body_pattern"))).append('\n');
-        sb.append("llm_condition_enabled=").append(toBool(rule.get("llm_condition_enabled"), false)).append('\n');
-        sb.append("llm_condition=").append(stringOrEmpty(rule.get("llm_condition"))).append('\n');
-        sb.append("action=").append(stringOrEmpty(rule.get("action"))).append('\n');
-        return sha256Hex(sb.toString());
-    }
-
-    private TaskRouteKey buildTaskRouteKey(TaskInstance inst) {
-        if (inst == null) {
-            return TaskRouteKey.build("", "", "", "", "", "", "off");
-        }
-        String source = inst.source != null ? inst.source : "";
-        String sourceId = inst.sourceId != null ? inst.sourceId : "";
-        String sourceConfigHash = inst.sourceConfigHash != null ? inst.sourceConfigHash : "";
-        String packageName = inst.packageName != null ? inst.packageName : "";
-        String userTask = inst.userTask != null ? inst.userTask : "";
-        String userPlaybook = inst.userPlaybook != null ? inst.userPlaybook : "";
-        String mode = inst.taskMapMode != null ? inst.taskMapMode : "off";
-        return TaskRouteKey.build(source, sourceId, sourceConfigHash, packageName, userTask, userPlaybook, mode);
+        return stringOrEmpty(taskId);
     }
 
     private static String normalizeTaskMapMode(String mode) {
@@ -1502,18 +1516,9 @@ public class CortexTaskManager {
         return "off";
     }
 
-    private static String sha256Hex(String text) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] digest = md.digest(text.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte b : digest) {
-                sb.append(String.format("%02x", b & 0xFF));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            return "";
-        }
+
+    private static String stringOrEmpty(Object o) {
+        return o == null ? "" : String.valueOf(o).trim();
     }
 
     private Map<String, Object> selectTaskMemoryHint(String taskKey, String scheduleId) {
@@ -1598,10 +1603,6 @@ public class CortexTaskManager {
             out.add(in.get(i));
         }
         return out;
-    }
-
-    private static String stringOrEmpty(Object o) {
-        return o == null ? "" : String.valueOf(o).trim();
     }
 
     private void loadTaskMemoryFromDisk() {
@@ -1757,27 +1758,15 @@ public class CortexTaskManager {
         row.put("schedule_id", inst.scheduleId);
         row.put("user_playbook", inst.userPlaybook);
         row.put("source_id", inst.sourceId);
-        row.put("source_config_hash", inst.sourceConfigHash);
         row.put("task_map_mode", inst.taskMapMode);
         row.put("task_memory_key", inst.taskMemoryKey);
         row.put("memory_applied", inst.memoryApplied);
         row.put("record_enabled", inst.recordEnabled);
         row.put("record_started", inst.recordStarted);
         row.put("record_file", inst.recordFilePath);
-        TaskRouteKey routeKey = buildTaskRouteKey(inst);
-        String persistedKeyHash = resolvePersistedTaskKeyHash(
-                routeKey.taskKeyHash,
-                inst.taskId,
-                inst.source,
-                inst.sourceId,
-                inst.packageName,
-                inst.userTask,
-                inst.userPlaybook,
-                inst.taskMapMode
-        );
-        row.put("task_key", routeKey.canonicalJson);
-        row.put("task_key_hash", persistedKeyHash.isEmpty() ? routeKey.taskKeyHash : persistedKeyHash);
-        row.put("has_task_map", taskMapStore.hasMap(persistedKeyHash.isEmpty() ? routeKey.taskKeyHash : persistedKeyHash));
+        String routeId = resolveRouteId(inst.source, inst.sourceId, inst.taskId);
+        row.put("route_id", routeId);
+        row.put("has_task_map", taskMapStore.hasMap(routeId));
         row.put("task_summary", inst.taskSummary);
         return row;
     }
@@ -1800,7 +1789,7 @@ public class CortexTaskManager {
             inst.scheduleId = stringOrEmpty(row.get("schedule_id"));
             inst.userPlaybook = stringOrEmpty(row.get("user_playbook"));
             inst.sourceId = stringOrEmpty(row.get("source_id"));
-            inst.sourceConfigHash = stringOrEmpty(row.get("source_config_hash"));
+            inst.sourceConfigHash = "";
             inst.taskMapMode = stringOrEmpty(row.get("task_map_mode"));
             inst.taskMemoryKey = stringOrEmpty(row.get("task_memory_key"));
             inst.memoryApplied = toBool(row.get("memory_applied"), false);

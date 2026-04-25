@@ -842,13 +842,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun loadTaskMapDetail(task: TaskSummary) {
         loadTaskMapDetailByQuery(
             taskId = task.taskId,
-            taskKeyHash = task.taskKeyHash
+            routeId = task.routeId
         )
     }
 
     fun loadTaskMapDetailByQuery(
         taskId: String = "",
-        taskKeyHash: String = "",
+        routeId: String = "",
         source: String = "",
         sourceId: String = "",
         packageName: String = "",
@@ -862,7 +862,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val requestTaskId = taskId.trim()
-        val requestTaskKeyHash = taskKeyHash.trim()
+        val requestRouteId = routeId.trim()
         val requestSource = source.trim()
         val requestSourceId = sourceId.trim()
         val requestPackageName = packageName.trim()
@@ -871,7 +871,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val requestMode = mode.trim()
         val requestKey = listOf(
             requestTaskId,
-            requestTaskKeyHash,
+            requestRouteId,
             requestSource,
             requestSourceId,
             requestPackageName,
@@ -887,7 +887,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val payload = org.json.JSONObject()
                         .put("action", "get")
                         .put("task_id", requestTaskId)
-                        .put("task_key_hash", requestTaskKeyHash)
+                        .put("route_id", requestRouteId)
                         .put("source", requestSource)
                         .put("source_id", requestSourceId)
                         .put("package_name", requestPackageName)
@@ -918,7 +918,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveManualTaskMapForTask(task: TaskSummary, deleteActionIds: List<String>) {
         saveManualTaskMapByKey(
-            taskKeyHash = task.taskKeyHash,
+            routeId = task.routeId,
             taskId = task.taskId,
             deleteActionIds = deleteActionIds,
             finishAfterReplay = false
@@ -929,7 +929,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveManualTaskMapByKey(
-        taskKeyHash: String,
+        routeId: String,
         taskId: String = "",
         deleteActionIds: List<String>,
         finishAfterReplay: Boolean,
@@ -940,9 +940,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val requestTaskId = taskId.trim()
-        val requestTaskKeyHash = taskKeyHash.trim()
-        if (requestTaskId.isEmpty() && requestTaskKeyHash.isEmpty()) {
-            appendSystemMessage("Task route key is empty.")
+        val requestRouteId = routeId.trim()
+        if (requestTaskId.isEmpty() && requestRouteId.isEmpty()) {
+            appendSystemMessage("Route ID is empty.")
             return
         }
         _taskMapSaving.value = true
@@ -959,7 +959,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val payload = org.json.JSONObject()
                         .put("action", "save_manual")
                         .put("task_id", requestTaskId)
-                        .put("task_key_hash", requestTaskKeyHash)
+                        .put("route_id", requestRouteId)
                         .put("delete_action_ids", deleteArr)
                         .put("finish_after_replay", finishAfterReplay)
                         .toString()
@@ -991,15 +991,128 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteTaskMapForTask(task: TaskSummary) {
         deleteTaskMapByQuery(
-            taskKeyHash = task.taskKeyHash
+            routeId = task.routeId
         ) {
             _taskMapDetail.value = _taskMapDetail.value?.copy(taskMap = null, hasMap = false)
             refreshTaskListOnDevice(silent = true)
         }
     }
 
+    fun exportPortableTaskMapByKey(
+        routeId: String,
+        taskId: String = "",
+        source: String = "",
+        sourceId: String = "",
+        packageName: String = "",
+        userTask: String = "",
+        userPlaybook: String = "",
+        mode: String = ""
+    ) {
+        val port = currentLxbPortOrNull() ?: run {
+            appendSystemMessage("Invalid lxb-core port, cannot export portable task route.")
+            return
+        }
+        val requestRouteId = routeId.trim()
+        if (requestRouteId.isEmpty() && taskId.trim().isEmpty()) {
+            appendSystemMessage("Route ID is empty.")
+            return
+        }
+        _taskMapSaving.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val msg = runCatching {
+                coreClientGateway.withClient(port = port) { client ->
+                    val payload = org.json.JSONObject()
+                        .put("action", "export_portable")
+                        .put("task_id", taskId.trim())
+                        .put("route_id", requestRouteId)
+                        .put("source", source.trim())
+                        .put("source_id", sourceId.trim())
+                        .put("package_name", packageName.trim())
+                        .put("user_task", userTask.trim())
+                        .put("user_playbook", userPlaybook.trim())
+                        .put("mode", mode.trim())
+                        .toString()
+                        .toByteArray(Charsets.UTF_8)
+                    val resp = client.sendCommand(
+                        CommandIds.CMD_CORTEX_TASK_MAP,
+                        payload,
+                        timeoutMs = 5_000
+                    )
+                    val text = resp.toString(Charsets.UTF_8)
+                    val obj = runCatching { org.json.JSONObject(text) }.getOrNull()
+                    if (obj != null && obj.optBoolean("ok", false)) {
+                        val bundleJson = obj.optString("bundle_json", "")
+                        if (bundleJson.isBlank()) {
+                            "Portable route export failed: empty bundle."
+                        } else {
+                            val path = writePortableTaskRouteExportFile(bundleJson)
+                            val locatorCount = obj.optInt("locator_step_count", 0)
+                            val semanticCount = obj.optInt("semantic_step_count", 0)
+                            "Portable route exported to $path (locator=$locatorCount, semantic=$semanticCount)."
+                        }
+                    } else {
+                        "Portable route export failed: ${text.take(220)}"
+                    }
+                }
+            }.getOrElse { e -> "Portable route export failed: ${e.message}" }
+            withContext(Dispatchers.Main) {
+                _taskMapSaving.value = false
+                appendSystemMessage(msg)
+            }
+        }
+    }
+
+    fun importPortableTaskMapFromUri(
+        targetPackageName: String,
+        uri: Uri,
+        onImported: ((String) -> Unit)? = null
+    ) {
+        val port = currentLxbPortOrNull() ?: run {
+            appendSystemMessage("Invalid lxb-core port, cannot import portable task route.")
+            return
+        }
+        _taskMapSaving.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val msg = runCatching {
+                val bundleJson = readPortableRouteBundle(uri)
+                coreClientGateway.withClient(port = port) { client ->
+                    val payload = org.json.JSONObject()
+                        .put("action", "import_portable")
+                        .put("target_route_id", "")
+                        .put("target_package_name", targetPackageName.trim())
+                        .put("bundle_json", bundleJson)
+                        .toString()
+                        .toByteArray(Charsets.UTF_8)
+                    val resp = client.sendCommand(
+                        CommandIds.CMD_CORTEX_TASK_MAP,
+                        payload,
+                        timeoutMs = 8_000
+                    )
+                    val text = resp.toString(Charsets.UTF_8)
+                    val obj = runCatching { org.json.JSONObject(text) }.getOrNull()
+                    if (obj != null && obj.optBoolean("ok", false)) {
+                        val pending = obj.optInt("pending_adaptation_count", 0)
+                        val executable = obj.optInt("materialized_count", 0)
+                        val importedTaskId = obj.optString("task_id", obj.optString("route_id", ""))
+                        "Portable route imported as new task $importedTaskId (pending_adaptation=$pending, executable=$executable)."
+                    } else {
+                        "Portable route import failed: ${text.take(220)}"
+                    }
+                }
+            }.getOrElse { e -> "Portable route import failed: ${e.message}" }
+            withContext(Dispatchers.Main) {
+                _taskMapSaving.value = false
+                appendSystemMessage(msg)
+                if (!msg.startsWith("Portable route import failed")) {
+                    val importedTaskId = Regex("new task ([^ ]+)").find(msg)?.groupValues?.getOrNull(1).orEmpty()
+                    onImported?.invoke(importedTaskId)
+                }
+            }
+        }
+    }
+
     fun deleteTaskMapByQuery(
-        taskKeyHash: String = "",
+        routeId: String = "",
         taskId: String = "",
         source: String = "",
         sourceId: String = "",
@@ -1013,7 +1126,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendSystemMessage("Invalid lxb-core port, cannot delete task route.")
             return
         }
-        val requestTaskKeyHash = taskKeyHash.trim()
+        val requestRouteId = routeId.trim()
         val requestTaskId = taskId.trim()
         val requestSource = source.trim()
         val requestSourceId = sourceId.trim()
@@ -1022,12 +1135,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val requestUserPlaybook = userPlaybook.trim()
         val requestMode = mode.trim()
         if (
-            requestTaskKeyHash.isEmpty() &&
+            requestRouteId.isEmpty() &&
             requestTaskId.isEmpty() &&
             requestSource.isEmpty() &&
             requestSourceId.isEmpty()
         ) {
-            appendSystemMessage("Task route key is empty.")
+            appendSystemMessage("Route ID is empty.")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -1035,7 +1148,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 coreClientGateway.withClient(port = port) { client ->
                     val payload = org.json.JSONObject()
                         .put("action", "delete")
-                        .put("task_key_hash", requestTaskKeyHash)
+                        .put("route_id", requestRouteId)
                         .put("task_id", requestTaskId)
                         .put("source", requestSource)
                         .put("source_id", requestSourceId)
@@ -2585,5 +2698,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return fallbackFile.absolutePath
+    }
+
+    private fun writePortableTaskRouteExportFile(bundleJson: String): String {
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val fileName = "lxb-route-portable-$stamp.json"
+        val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/LXB/Routes"
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, "application/json")
+            put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        if (uri != null) {
+            try {
+                val stream = resolver.openOutputStream(uri, "w")
+                    ?: throw IllegalStateException("Cannot open portable export file stream.")
+                stream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(bundleJson)
+                }
+                val publish = ContentValues().apply {
+                    put(MediaStore.Downloads.IS_PENDING, 0)
+                }
+                resolver.update(uri, publish, null, null)
+                return "Downloads/LXB/Routes/$fileName"
+            } catch (e: Exception) {
+                runCatching { resolver.delete(uri, null, null) }
+                throw e
+            }
+        }
+
+        val fallbackDir = File(app.getExternalFilesDir(null), "routes").apply { mkdirs() }
+        val fallbackFile = File(fallbackDir, fileName)
+        fallbackFile.writeText(bundleJson, Charsets.UTF_8)
+        return fallbackFile.absolutePath
+    }
+
+    private fun readPortableRouteBundle(uri: Uri): String {
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
+        val stream = resolver.openInputStream(uri)
+            ?: throw IllegalStateException("Cannot open portable route file.")
+        return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
     }
 }

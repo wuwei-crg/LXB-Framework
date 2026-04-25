@@ -15,7 +15,9 @@ class ScheduleUseCaseTest {
             task = "   ",
             packageName = "pkg",
             playbook = "",
+            enabled = true,
             recordEnabled = false,
+            taskMapMode = "off",
             runAtRaw = "1730000000000",
             repeatModeRaw = "once",
             repeatWeekdays = 0
@@ -37,7 +39,9 @@ class ScheduleUseCaseTest {
             task = "task",
             packageName = "pkg",
             playbook = "",
+            enabled = true,
             recordEnabled = false,
+            taskMapMode = "off",
             runAtRaw = "1730000000000",
             repeatModeRaw = "weekly",
             repeatWeekdays = 0
@@ -62,7 +66,9 @@ class ScheduleUseCaseTest {
             task = "  do things ",
             packageName = " com.demo.app ",
             playbook = " step1 ",
+            enabled = true,
             recordEnabled = true,
+            taskMapMode = "strict",
             runAtRaw = "1730000000000",
             repeatModeRaw = "daily",
             repeatWeekdays = 0b1111111
@@ -78,7 +84,9 @@ class ScheduleUseCaseTest {
         assertEquals("do things", draft.task)
         assertEquals("com.demo.app", draft.packageName)
         assertEquals("step1", draft.playbook)
+        assertTrue(draft.enabled)
         assertTrue(draft.recordEnabled)
+        assertEquals("strict", draft.taskMapMode)
         assertEquals(1730000000000, draft.runAt)
 
         val payload = ScheduleUseCase.buildUpsertPayload(
@@ -92,6 +100,8 @@ class ScheduleUseCaseTest {
         assertEquals("daily", json.optString("repeat_mode"))
         assertEquals(true, json.optBoolean("repeat_daily"))
         assertEquals(23456, json.optInt("trace_udp_port"))
+        assertEquals(true, json.optBoolean("enabled"))
+        assertEquals("strict", json.optString("task_map_mode"))
         assertFalse(json.optString("user_task").isBlank())
     }
 }

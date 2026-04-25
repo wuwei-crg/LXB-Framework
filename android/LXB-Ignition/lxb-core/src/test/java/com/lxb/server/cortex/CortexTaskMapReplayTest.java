@@ -84,10 +84,70 @@ public class CortexTaskMapReplayTest {
         }
     }
 
+    @Test
+    public void executeTaskMapRoutingStep_failedSemanticTapStopsBeforeTapResolution() throws Exception {
+        byte[] payload = buildDumpActionsPayload(
+                actionNode(0, 0, 1080, 2200, "android.widget.FrameLayout", "", "root", "")
+        );
+        FakeExecutionEngine execution = new FakeExecutionEngine();
+        CortexFsmEngine engine = new CortexFsmEngine(
+                new FakePerceptionEngine(payload),
+                execution,
+                null,
+                new TraceLogger(64),
+                new TaskMapStore(Files.createTempDirectory("taskmap-replay-semantic").toFile())
+        );
+
+        TaskMap.Step step = new TaskMap.Step();
+        step.stepId = "s0001";
+        step.op = "TAP";
+        step.portableKind = "semantic_tap";
+        step.adaptationStatus = "failed";
+        step.adaptationError = "no_match";
+
+        TaskMap.Segment segment = new TaskMap.Segment();
+        segment.segmentId = "seg0001";
+        segment.packageName = "com.demo";
+        segment.steps.add(step);
+
+        CortexFsmEngine.Context ctx = new CortexFsmEngine.Context("task1");
+        ctx.taskRouteKeyHash = "hash";
+        ctx.currentTaskMapSegment = segment;
+
+        LocatorResolver resolver = new LocatorResolver(new FakePerceptionEngine(payload), new TraceLogger(64));
+        Object exec = invokeExecuteTaskMapRoutingStep(engine, ctx, "com.demo", step, resolver, 0);
+        Assert.assertFalse((Boolean) readField(exec, "ok"));
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> summary = (java.util.Map<String, Object>) readField(exec, "step");
+        Assert.assertEquals("semantic_adaptation_failed", summary.get("result"));
+        Assert.assertEquals("no_match", summary.get("reason"));
+        Assert.assertEquals(0, execution.tapCount);
+    }
+
     private static Object invokeResolveTaskMapContainerProbePoint(CortexFsmEngine engine, TaskMap.Step step) throws Exception {
         Method method = CortexFsmEngine.class.getDeclaredMethod("resolveTaskMapContainerProbePoint", TaskMap.Step.class);
         method.setAccessible(true);
         return method.invoke(engine, step);
+    }
+
+    private static Object invokeExecuteTaskMapRoutingStep(
+            CortexFsmEngine engine,
+            CortexFsmEngine.Context ctx,
+            String pkg,
+            TaskMap.Step step,
+            LocatorResolver resolver,
+            int index
+    ) throws Exception {
+        Method method = CortexFsmEngine.class.getDeclaredMethod(
+                "executeTaskMapRoutingStep",
+                CortexFsmEngine.Context.class,
+                String.class,
+                TaskMap.Step.class,
+                LocatorResolver.class,
+                int.class
+        );
+        method.setAccessible(true);
+        return method.invoke(engine, ctx, pkg, step, resolver, index);
     }
 
     private static Object readField(Object target, String name) throws Exception {
@@ -191,6 +251,16 @@ public class CortexTaskMapReplayTest {
         @Override
         public byte[] handleDumpActions(byte[] payload) {
             return this.payload;
+        }
+    }
+
+    private static final class FakeExecutionEngine extends com.lxb.server.execution.ExecutionEngine {
+        private int tapCount = 0;
+
+        @Override
+        public byte[] handleTap(byte[] payload) {
+            tapCount += 1;
+            return new byte[]{0x01};
         }
     }
 }

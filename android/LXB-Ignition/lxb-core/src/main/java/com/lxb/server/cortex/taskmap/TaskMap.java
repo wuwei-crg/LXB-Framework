@@ -69,6 +69,13 @@ public final class TaskMap {
         public String fallbackPoint = "";
         public String semanticNote = "";
         public String expected = "";
+        public String portableKind = "";
+        public Map<String, Object> semanticDescriptor = new LinkedHashMap<String, Object>();
+        public String adaptationStatus = "";
+        public String adaptationError = "";
+        public long adaptationAttemptedAtMs;
+        public String materializedFromStepId = "";
+        public long materializedAtMs;
 
         public Map<String, Object> toMap() {
             Map<String, Object> out = new LinkedHashMap<String, Object>();
@@ -83,6 +90,13 @@ public final class TaskMap {
             out.put("fallback_point", fallbackPoint);
             out.put("semantic_note", semanticNote);
             out.put("expected", expected);
+            out.put("portable_kind", portableKind);
+            out.put("semantic_descriptor", new LinkedHashMap<String, Object>(semanticDescriptor));
+            out.put("adaptation_status", adaptationStatus);
+            out.put("adaptation_error", adaptationError);
+            out.put("adaptation_attempted_at_ms", adaptationAttemptedAtMs);
+            out.put("materialized_from_step_id", materializedFromStepId);
+            out.put("materialized_at_ms", materializedAtMs);
             return out;
         }
     }
@@ -90,10 +104,9 @@ public final class TaskMap {
     public Map<String, Object> toMap() {
         Map<String, Object> out = new LinkedHashMap<String, Object>();
         out.put("schema", schema);
-        out.put("task_key_hash", taskKeyHash);
+        out.put("route_id", taskKeyHash);
         out.put("source", source);
         out.put("source_id", sourceId);
-        out.put("source_config_hash", sourceConfigHash);
         out.put("package_name", packageName);
         out.put("package_label", packageLabel);
         out.put("created_from_task_id", createdFromTaskId);
@@ -120,10 +133,10 @@ public final class TaskMap {
         if (out.schema.isEmpty()) {
             out.schema = "task_map.v1";
         }
-        out.taskKeyHash = stringOrEmpty(map.get("task_key_hash"));
+        out.taskKeyHash = stringOrEmpty(map.get("route_id"));
         out.source = stringOrEmpty(map.get("source"));
         out.sourceId = stringOrEmpty(map.get("source_id"));
-        out.sourceConfigHash = stringOrEmpty(map.get("source_config_hash"));
+        out.sourceConfigHash = "";
         out.packageName = stringOrEmpty(map.get("package_name"));
         out.packageLabel = stringOrEmpty(map.get("package_label"));
         out.createdFromTaskId = stringOrEmpty(map.get("created_from_task_id"));
@@ -201,6 +214,16 @@ public final class TaskMap {
                         step.fallbackPoint = stringOrEmpty(sRow.get("fallback_point"));
                         step.semanticNote = stringOrEmpty(sRow.get("semantic_note"));
                         step.expected = stringOrEmpty(sRow.get("expected"));
+                        step.portableKind = stringOrEmpty(sRow.get("portable_kind"));
+                        Object semanticDescriptorObj = sRow.get("semantic_descriptor");
+                        if (semanticDescriptorObj instanceof Map) {
+                            step.semanticDescriptor.putAll((Map<String, Object>) semanticDescriptorObj);
+                        }
+                        step.adaptationStatus = stringOrEmpty(sRow.get("adaptation_status"));
+                        step.adaptationError = stringOrEmpty(sRow.get("adaptation_error"));
+                        step.adaptationAttemptedAtMs = toLong(sRow.get("adaptation_attempted_at_ms"), 0L);
+                        step.materializedFromStepId = stringOrEmpty(sRow.get("materialized_from_step_id"));
+                        step.materializedAtMs = toLong(sRow.get("materialized_at_ms"), 0L);
                         seg.steps.add(step);
                     }
                 }
@@ -239,6 +262,11 @@ public final class TaskMap {
 
     private static String stringOrEmpty(Object o) {
         return o == null ? "" : String.valueOf(o).trim();
+    }
+
+    private static String firstNonEmpty(String a, String b) {
+        String av = stringOrEmpty(a);
+        return !av.isEmpty() ? av : stringOrEmpty(b);
     }
 
     private static long toLong(Object o, long defVal) {

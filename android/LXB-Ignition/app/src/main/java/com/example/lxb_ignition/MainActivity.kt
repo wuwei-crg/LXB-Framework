@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -1725,7 +1726,7 @@ private val ZhMap = mapOf(
     "Refresh" to "刷新",
     "Task Details" to "任务详情",
     "Task route detail" to "任务路线详情",
-    "Task route key" to "任务路线键",
+    "Route ID" to "任务路线键",
     "Task route mode" to "按路线执行",
     "No task summary available yet." to "暂时没有任务摘要。",
     "Loading task route details..." to "正在加载任务路线详情...",
@@ -2221,6 +2222,22 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     var editingNotifyRuleId by rememberSaveable { mutableStateOf("") }
     var selectedTask by remember { mutableStateOf<TaskSummary?>(null) }
     var routeEditorTarget by remember { mutableStateOf<RouteEditorTarget?>(null) }
+    val portableImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val target = routeEditorTarget
+        if (uri != null && target != null) {
+            viewModel.importPortableTaskMapFromUri(
+                targetPackageName = target.packageName,
+                uri = uri
+            ) { importedTaskId ->
+                viewModel.refreshTaskListOnDevice(silent = true)
+                if (importedTaskId.isNotBlank()) {
+                    viewModel.loadTaskMapDetailByQuery(taskId = importedTaskId)
+                }
+            }
+        }
+    }
 
     val pageHome = 0
     val pageScheduleList = 1
@@ -2238,7 +2255,7 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         viewModel.refreshTaskListOnDevice()
     }
 
-    LaunchedEffect(selectedTask?.taskId, selectedTask?.taskKeyHash) {
+    LaunchedEffect(selectedTask?.taskId, selectedTask?.routeId) {
         val task = selectedTask
         if (task == null) {
             viewModel.clearTaskMapDetail()
@@ -3211,9 +3228,9 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         )
                     },
                     onSaveManualTaskMap = { deleteIds, finishAfterReplay ->
-                        val key = taskMapDetail?.taskKeyHash.orEmpty()
+                        val key = taskMapDetail?.routeId.orEmpty()
                         viewModel.saveManualTaskMapByKey(
-                            taskKeyHash = key,
+                            routeId = key,
                             deleteActionIds = deleteIds,
                             finishAfterReplay = finishAfterReplay
                         ) {
@@ -3226,6 +3243,20 @@ fun TasksTab(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                                 mode = target.mode
                             )
                         }
+                    },
+                    onExportPortable = {
+                        viewModel.exportPortableTaskMapByKey(
+                            routeId = taskMapDetail?.routeId.orEmpty(),
+                            source = target.source,
+                            sourceId = target.sourceId,
+                            packageName = target.packageName,
+                            userTask = target.userTask,
+                            userPlaybook = target.userPlaybook,
+                            mode = target.mode
+                        )
+                    },
+                    onImportPortable = {
+                        portableImportLauncher.launch(arrayOf("application/json", "text/plain"))
                     }
                 )
             }
@@ -3323,7 +3354,9 @@ private fun TaskRouteEditorPage(
     saving: Boolean,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
-    onSaveManualTaskMap: (List<String>, Boolean) -> Unit
+    onSaveManualTaskMap: (List<String>, Boolean) -> Unit,
+    onExportPortable: () -> Unit,
+    onImportPortable: () -> Unit
 ) {
     val scrollState = rememberScrollState()
     val editableRecord = routeDetail?.latestAttemptRecord ?: routeDetail?.latestSuccessRecord
@@ -3342,12 +3375,30 @@ private fun TaskRouteEditorPage(
     ) {
         PageHeaderBlock(
             title = tr("Route Editor"),
-            subtitle = tr("Review the latest captured path, delete noisy actions, and save only the useful route."),
+            subtitle = tr("Review the latest captured path, delete noisy actions, save the useful route, then export or import a portable route bundle."),
             glyph = "⇄",
             onBack = onBack,
             primaryActionLabel = tr("Refresh"),
             onPrimaryAction = onRefresh
         )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OutlinedButton(
+                onClick = onExportPortable,
+                enabled = !saving && routeDetail?.hasMap == true
+            ) {
+                Text(tr("Export Portable Route"))
+            }
+            OutlinedButton(
+                onClick = onImportPortable,
+                enabled = !saving
+            ) {
+                Text(tr("Import Portable Route"))
+            }
+        }
 
         SurfacePanel(
             modifier = Modifier.fillMaxWidth(),
@@ -3460,7 +3511,7 @@ private fun TaskMapMetaSection(detail: TaskMapDetail) {
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(tr("Task route detail"), style = MaterialTheme.typography.labelLarge)
-            if (detail.taskKeyHash.isNotBlank()) DetailTextLine(tr("Task route key"), detail.taskKeyHash)
+            if (detail.routeId.isNotBlank()) DetailTextLine(tr("Route ID"), detail.routeId)
             if (detail.mode.isNotBlank()) DetailTextLine(tr("Task route mode"), formatTaskRouteMode(detail.mode))
             if (detail.source.isNotBlank()) DetailTextLine(tr("Source"), detail.source)
             if (detail.sourceId.isNotBlank()) DetailTextLine(tr("Source ID"), detail.sourceId)
@@ -3642,6 +3693,16 @@ private fun SavedRouteStepRow(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.86f)
                 )
                 val hint = when {
+                    step.portableKind.isNotBlank() && step.adaptationStatus.isNotBlank() ->
+                        buildString {
+                            append(step.portableKind)
+                            append(" / ")
+                            append(step.adaptationStatus)
+                            if (step.adaptationError.isNotBlank()) {
+                                append(" / ")
+                                append(step.adaptationError)
+                            }
+                        }
                     step.semanticNote.isNotBlank() -> step.semanticNote
                     step.expected.isNotBlank() -> step.expected
                     else -> tr("Tap to view locator and fallback details.")
@@ -3717,11 +3778,26 @@ private fun TaskMapStepDetailDialog(
                 if (step.sourceActionId.isNotBlank()) DetailTextLine(tr("Source action ID"), step.sourceActionId)
                 if (step.op.isNotBlank()) DetailTextLine(tr("Operation"), step.op)
                 if (step.args.isNotEmpty()) DetailTextLine(tr("Arguments"), step.args.joinToString(" "))
+                if (step.portableKind.isNotBlank()) DetailTextLine(tr("Portable kind"), step.portableKind)
+                if (step.adaptationStatus.isNotBlank()) DetailTextLine(tr("Adaptation status"), step.adaptationStatus)
+                if (step.adaptationError.isNotBlank()) DetailTextLine(tr("Adaptation error"), step.adaptationError)
+                if (step.materializedFromStepId.isNotBlank()) DetailTextLine(tr("Materialized from"), step.materializedFromStepId)
+                if (step.materializedAtMs > 0L) DetailTextLine(tr("Materialized at"), formatTsFull(step.materializedAtMs))
                 if (step.semanticNote.isNotBlank()) DetailTextLine(tr("Page semantics"), step.semanticNote)
                 if (step.expected.isNotBlank()) DetailTextLine(tr("Expected"), step.expected)
+                if (step.tapPoint.isNotBlank()) DetailTextLine(tr("Tap point"), step.tapPoint)
                 if (step.fallbackPoint.isNotBlank()) DetailTextLine(tr("Fallback point"), step.fallbackPoint)
                 if (step.locatorFields.isNotEmpty()) {
                     TraceDetailSection(title = tr("Locator"), items = step.locatorFields)
+                }
+                if (step.containerProbeFields.isNotEmpty()) {
+                    TraceDetailSection(title = tr("Container probe"), items = step.containerProbeFields)
+                }
+                if (step.semanticDescriptorFields.isNotEmpty()) {
+                    TraceDetailSection(title = tr("Semantic descriptor"), items = step.semanticDescriptorFields)
+                }
+                if (step.swipeFields.isNotEmpty()) {
+                    TraceDetailSection(title = tr("Swipe"), items = step.swipeFields)
                 }
             }
         },

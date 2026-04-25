@@ -57,7 +57,7 @@ public final class TaskMapAssembler {
                 segment.subTaskId = action.subTaskId != null && !action.subTaskId.isEmpty() ? action.subTaskId : "default";
                 segment.subTaskIndex = segments.size();
                 segment.subTaskDescription = record.rootTask != null ? record.rootTask : "";
-                segment.subTaskDescriptionHash = TaskRouteKey.sha256Hex(segment.subTaskDescription);
+                segment.subTaskDescriptionHash = "";
                 segment.successCriteria = "";
                 segment.packageName = record.packageName != null ? record.packageName : "";
                 segment.packageLabel = record.packageLabel != null ? record.packageLabel : "";
@@ -96,7 +96,7 @@ public final class TaskMapAssembler {
         out.taskKeyHash = record.taskKeyHash;
         out.source = record.source;
         out.sourceId = record.sourceId;
-        out.sourceConfigHash = record.sourceConfigHash;
+        out.sourceConfigHash = "";
         out.packageName = record.packageName;
         out.packageLabel = record.packageLabel;
         out.createdFromTaskId = record.taskId;

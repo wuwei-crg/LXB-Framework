@@ -103,7 +103,7 @@ object CoreApiParser {
                 targetPage = t.optString("target_page", ""),
                 source = t.optString("source", ""),
                 scheduleId = t.optString("schedule_id", ""),
-                taskKeyHash = t.optString("task_key_hash", ""),
+                routeId = t.optString("route_id", ""),
                 taskMapMode = t.optString("task_map_mode", ""),
                 hasTaskMap = t.optBoolean("has_task_map", false),
                 memoryApplied = t.optBoolean("memory_applied", false),
@@ -317,7 +317,7 @@ object CoreApiParser {
             return Pair("Task route detail query failed: ${text.take(220)}", null)
         }
         val detail = TaskMapDetail(
-            taskKeyHash = obj.optString("task_key_hash", ""),
+            routeId = obj.optString("route_id", ""),
             mode = obj.optString("mode", ""),
             source = obj.optString("source", ""),
             sourceId = obj.optString("source_id", ""),
@@ -380,7 +380,16 @@ object CoreApiParser {
                     fallbackPoint = normalizeText(stepObj.opt("fallback_point")?.toString().orEmpty(), 240),
                     semanticNote = stepObj.optString("semantic_note", ""),
                     expected = stepObj.optString("expected", ""),
-                    locatorFields = jsonObjectToMetaItems(stepObj.optJSONObject("locator"))
+                    locatorFields = jsonObjectToMetaItems(stepObj.optJSONObject("locator")),
+                    containerProbeFields = jsonObjectToMetaItems(stepObj.optJSONObject("container_probe")),
+                    semanticDescriptorFields = jsonObjectToMetaItems(stepObj.optJSONObject("semantic_descriptor")),
+                    tapPoint = normalizeText(stepObj.opt("tap_point")?.toString().orEmpty(), 240),
+                    swipeFields = jsonObjectToMetaItems(stepObj.optJSONObject("swipe")),
+                    portableKind = stepObj.optString("portable_kind", ""),
+                    adaptationStatus = stepObj.optString("adaptation_status", ""),
+                    adaptationError = stepObj.optString("adaptation_error", ""),
+                    materializedFromStepId = stepObj.optString("materialized_from_step_id", ""),
+                    materializedAtMs = stepObj.optLong("materialized_at_ms", 0L)
                 )
             }
             segments += TaskMapSegmentSnapshot(

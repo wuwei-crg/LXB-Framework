@@ -64,10 +64,9 @@ public final class TaskRouteRecord {
     public Map<String, Object> toMap() {
         Map<String, Object> out = new LinkedHashMap<String, Object>();
         out.put("schema", schema);
-        out.put("task_key_hash", taskKeyHash);
+        out.put("route_id", taskKeyHash);
         out.put("source", source);
         out.put("source_id", sourceId);
-        out.put("source_config_hash", sourceConfigHash);
         out.put("task_map_mode", taskMapMode);
         out.put("task_id", taskId);
         out.put("root_task", rootTask);
@@ -96,10 +95,10 @@ public final class TaskRouteRecord {
         if (record.schema.isEmpty()) {
             record.schema = "task_route_record.v1";
         }
-        record.taskKeyHash = stringOrEmpty(map.get("task_key_hash"));
+        record.taskKeyHash = stringOrEmpty(map.get("route_id"));
         record.source = stringOrEmpty(map.get("source"));
         record.sourceId = stringOrEmpty(map.get("source_id"));
-        record.sourceConfigHash = stringOrEmpty(map.get("source_config_hash"));
+        record.sourceConfigHash = "";
         record.taskMapMode = stringOrEmpty(map.get("task_map_mode"));
         if (record.taskMapMode.isEmpty()) {
             record.taskMapMode = "off";
@@ -169,6 +168,11 @@ public final class TaskRouteRecord {
 
     private static String stringOrEmpty(Object o) {
         return o == null ? "" : String.valueOf(o).trim();
+    }
+
+    private static String firstNonEmpty(String a, String b) {
+        String av = stringOrEmpty(a);
+        return !av.isEmpty() ? av : stringOrEmpty(b);
     }
 
     private static long toLong(Object o, long defVal) {
