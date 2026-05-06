@@ -1,0 +1,100 @@
+site_name: AutoLXB 使用手册
+site_description: AutoLXB Android 端自动化框架使用手册
+site_url: https://wuwei-crg.github.io/AutoLXB/
+repo_url: https://github.com/wuwei-crg/AutoLXB
+repo_name: wuwei-crg/AutoLXB
+edit_uri: edit/master/docs/
+
+docs_dir: docs
+site_dir: site
+
+dev_addr: 127.0.0.1:8173
+
+use_directory_urls: true
+
+nav:
+  - 首页: index.md
+  - 快速开始:
+      - 安装与准备: getting-started/install.md
+      - 启动 Core: getting-started/start-core.md
+      - 配置模型: getting-started/model-config.md
+  - 任务教程:
+      - 概览: tasks/overview.md
+      - 快速任务: tasks/quick-task.md
+      - 定时任务: tasks/schedules.md
+      - 通知触发任务: tasks/notification-triggers.md
+      - 任务路线机制: tasks/routes-concepts.md
+      - 任务路线编辑: tasks/route-editor.md
+      - 任务导出与导入: tasks/import-export.md
+  - 配置说明: config/overview.md
+  - 如何查看 Trace:
+      - 概览: trace/overview.md
+      - 任务流程 Trace: trace/task-flow.md
+      - 任务路线 Trace: trace/routes.md
+      - 视觉执行 Trace: trace/vision.md
+      - 通知触发 Trace: trace/notification.md
+      - 动作执行 Trace: trace/actions.md
+
+theme:
+  name: material
+  language: zh
+  logo: assets/images/logo.jpg
+  favicon: assets/images/logo.jpg
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - scheme: default
+      primary: blue
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: 切换到深色模式
+    - scheme: slate
+      primary: blue
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到浅色模式
+
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/wuwei-crg/AutoLXB
