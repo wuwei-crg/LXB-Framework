@@ -6,6 +6,8 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -19,15 +21,17 @@ import java.net.SocketTimeoutException;
  * - Write encoded response frame back to client
  */
 public class TcpServer {
+    public static final String BIND_HOST = "127.0.0.1";
 
     private ServerSocket serverSocket;
     private boolean running = false;
 
     public void listen(int port) throws IOException {
-        serverSocket = new ServerSocket(port);
+        serverSocket = new ServerSocket();
         serverSocket.setReuseAddress(true);
+        serverSocket.bind(new InetSocketAddress(InetAddress.getByName(BIND_HOST), port));
         running = true;
-        System.out.println("[TCP] Listening on port " + port);
+        System.out.println("[TCP] Listening on " + BIND_HOST + ":" + serverSocket.getLocalPort());
     }
 
     public ClientConnection accept(int timeoutMs) throws IOException {

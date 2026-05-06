@@ -6,6 +6,8 @@ import androidx.core.content.ContextCompat
 import com.example.lxb_ignition.model.TaskRuntimeUiStatus
 import com.example.lxb_ignition.model.TaskSummary
 import com.example.lxb_ignition.service.TaskRuntimeService
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.SocketTimeoutException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -129,8 +131,9 @@ class TaskRuntimeController(
         val job = scope.launch(ioDispatcher) {
             var server: ServerSocket? = null
             try {
-                server = ServerSocket(tracePort).apply {
+                server = ServerSocket().apply {
                     reuseAddress = true
+                    bind(InetSocketAddress(InetAddress.getByName(LOCAL_TRACE_HOST), tracePort))
                     soTimeout = 1000
                 }
                 while (isActive) {
@@ -211,5 +214,9 @@ class TaskRuntimeController(
         if (update.stopAfter) {
             stopIndicator()
         }
+    }
+
+    private companion object {
+        const val LOCAL_TRACE_HOST = "127.0.0.1"
     }
 }

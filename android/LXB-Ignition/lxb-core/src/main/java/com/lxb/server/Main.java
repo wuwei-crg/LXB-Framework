@@ -74,7 +74,7 @@ public class Main {
             System.out.println(TAG + " [5/5] Starting TCP server...");
             TcpServer server = new TcpServer();
             server.listen(port);
-            System.out.println(TAG + " Server listening on TCP port " + port);
+            System.out.println(TAG + " Server listening on " + TcpServer.BIND_HOST + ":" + port);
             System.out.println(TAG + " Ready to accept connections.");
             System.out.println(TAG + " =============================================");
 

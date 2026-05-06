@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.util.Arrays;
 
@@ -12,6 +13,8 @@ import java.util.Arrays;
  * 职责: 管理 DatagramSocket 生命周期，提供帧收发封装
  */
 public class UdpServer {
+    public static final String BIND_HOST = "127.0.0.1";
+
     private DatagramSocket socket;
     private boolean running = false;
 
@@ -19,10 +22,12 @@ public class UdpServer {
      * 监听指定端口
      */
     public void listen(int port) throws IOException {
-        socket = new DatagramSocket(port);
+        socket = new DatagramSocket(null);
+        socket.setReuseAddress(true);
+        socket.bind(new InetSocketAddress(InetAddress.getByName(BIND_HOST), port));
         socket.setReceiveBufferSize(65536);  // 协议要求
         running = true;
-        System.out.println("[UDP] Listening on port " + port);
+        System.out.println("[UDP] Listening on " + BIND_HOST + ":" + socket.getLocalPort());
     }
 
     /**
