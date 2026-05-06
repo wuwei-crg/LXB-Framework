@@ -1813,6 +1813,8 @@ private val ZhMap = mapOf(
     "Save manual route" to "手动保存路线",
     "Saving..." to "保存中...",
     "Finish after replay" to "回放结束后直接结束任务",
+    "Save option: finish after replay" to "保存选项：回放后直接结束任务",
+    "This option is saved only when you tap Save manual route." to "这个选项只有点击“手动保存路线”时才会一起保存。",
     "If enabled, a successful task-route replay skips VISION_ACT and finishes the current sub-task directly." to "开启后，路线回放成功将直接结束当前任务，不再进入后续视觉执行。",
     "No trace actions yet." to "暂时还没有轨迹动作。",
     "App label" to "应用名称",
@@ -3497,33 +3499,6 @@ private fun TaskRouteEditorPage(
             onPrimaryAction = onRefresh
         )
 
-        SurfacePanel(
-            modifier = Modifier.fillMaxWidth(),
-            background = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f).compositeOver(MaterialTheme.colorScheme.surface),
-            borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-        ) {
-            Row(
-                modifier = Modifier.padding(18.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(tr("Replay behavior"), style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        text = tr("If enabled, a successful task-route replay skips VISION_ACT and finishes the current sub-task directly."),
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                    )
-                }
-                Switch(
-                    checked = finishAfterReplay,
-                    onCheckedChange = { finishAfterReplay = it }
-                )
-            }
-        }
 
         if (loading) {
             Text(
@@ -3548,6 +3523,8 @@ private fun TaskRouteEditorPage(
                 editable = true,
                 saving = saving,
                 selectedDeleteIds = deleteActionIds,
+                finishAfterReplay = finishAfterReplay,
+                onFinishAfterReplayChange = { finishAfterReplay = it },
                 onToggleDelete = { actionId ->
                     deleteActionIds = if (deleteActionIds.contains(actionId)) {
                         deleteActionIds - actionId
@@ -3948,6 +3925,8 @@ private fun TaskRouteRecordSection(
     editable: Boolean,
     saving: Boolean,
     selectedDeleteIds: Set<String>,
+    finishAfterReplay: Boolean = false,
+    onFinishAfterReplayChange: (Boolean) -> Unit = {},
     onToggleDelete: (String) -> Unit,
     onSaveManual: () -> Unit
 ) {
@@ -3993,6 +3972,34 @@ private fun TaskRouteRecordSection(
                         enabled = !saving && keptActions.isNotEmpty()
                     ) {
                         Text(if (saving) tr("Saving...") else tr("Save manual route"))
+                    }
+                }
+                SurfacePanel(
+                    modifier = Modifier.fillMaxWidth(),
+                    background = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.24f)
+                        .compositeOver(MaterialTheme.colorScheme.surface),
+                    borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(tr("Finish after replay"), style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = tr("This option is saved only when you tap Save manual route."),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                        Switch(
+                            checked = finishAfterReplay,
+                            onCheckedChange = onFinishAfterReplayChange
+                        )
                     }
                 }
             }
