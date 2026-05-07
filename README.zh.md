@@ -107,7 +107,7 @@ AutoLXB 适合“重复、线性、可触发”的任务。建议优先使用下
 
 ## 更多文档
 
-- [快速开始](https://wuwei-crg.github.io/AutoLXB/getting-started/quickstart/)
+- [快速开始](https://wuwei-crg.github.io/AutoLXB/getting-started/install/)
 - [任务教程](https://wuwei-crg.github.io/AutoLXB/tasks/overview/)
 - [配置说明](https://wuwei-crg.github.io/AutoLXB/config/overview/)
 - [Trace 日志](https://wuwei-crg.github.io/AutoLXB/trace/overview/)
